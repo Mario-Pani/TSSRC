@@ -1,17 +1,23 @@
 <script setup lang="ts">
-import { computed,ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { polygonVertices, computeDims } from '../utils/geometry'
 
 const props = defineProps<{
   ID: number; OD: number; coeff: number;
   scale: number; showGuides?: boolean;
-  panX: number; panY: number
+  panX: number; panY: number;
+  wheelStep?: number;
+  layers?: number; // número de capas superpuestas
+  layersEnabled?: boolean[]; // array con flags (true/false) para cada capa
+  layerAngleStepDeg?: number; // opcional: forzar paso angular por capa (grados)
 }>()
 const emit = defineEmits<{
   (e: 'update:scale', v: number): void
   (e:'update:pan-x', v:number): void
   (e:'update:pan-y', v:number): void
-
+  (e: 'update:layers', v: number): void
+  (e: 'update:layers-enabled', v: boolean[]): void
+  (e: 'update:layer-angle-step-deg', v: number): void
 }>()
 
 
@@ -30,6 +36,132 @@ const Roc = computed(() => dims.value.corrected.Roc)
 const inner = computed(() => polygonVertices(Ri.value,  N.value))
 const outer = computed(() => polygonVertices(Roc.value, N.value))
 
+// Paleta para alternar colores (par / impar)
+const colors = [
+  { fill: '#8ac29a50', stroke: '#8aa89a' }, // azul claro / verde
+  { fill: '#b5f8e450', stroke: '#c1bcd4' }  // amarillo claro / naranja
+]
+
+// LOCAL: estado de control de capas (editable desde UI) y sincronización con props
+const localLayers = ref(props.layers ?? 3)
+const localLayersEnabled = ref<boolean[]>(
+  (props.layersEnabled ?? Array.from({ length: localLayers.value }, () => true)).slice(0, localLayers.value)
+)
+
+watch(() => props.layers, (v) => {
+  if (typeof v === 'number') {
+    const clamped = Math.max(3, v)
+    localLayers.value = clamped
+    // ajustar enabled
+    while (localLayersEnabled.value.length < clamped) localLayersEnabled.value.push(true)
+    if (localLayersEnabled.value.length > clamped) localLayersEnabled.value.length = clamped
+  }
+})
+
+watch(() => localLayers.value, (v) => {
+  const clamped = Math.max(3, v)
+  if (clamped !== v) {
+    localLayers.value = clamped
+    return
+  }
+
+  // Ajustar enabled al cambiar el número de capas
+  while (localLayersEnabled.value.length < clamped) localLayersEnabled.value.push(true)
+  if (localLayersEnabled.value.length > clamped) localLayersEnabled.value.length = clamped
+
+  if (props.layers !== clamped) {
+    emit('update:layers', clamped)
+  }
+})
+
+watch(() => props.layersEnabled, (v) => {
+  if (Array.isArray(v)) {
+    // copia y normaliza longitud
+    localLayersEnabled.value = v.slice(0, localLayers.value)
+    while (localLayersEnabled.value.length < localLayers.value) localLayersEnabled.value.push(true)
+  }
+})
+
+// Helper para extraer hex sin alpha (color picker solo acepta #RRGGBB)
+function extractHex(color: string): string {
+  return color.length > 7 ? color.slice(0, 7) : color
+}
+
+// Colores personalizados por capa
+const localLayerColors = ref<Array<{ fill: string; stroke: string }>>(
+  Array.from({ length: localLayers.value }, (_, i) => ({
+    fill: extractHex(colors[i % 2].fill),
+    stroke: extractHex(colors[i % 2].stroke)
+  }))
+)
+
+watch(() => localLayers.value, (newCount) => {
+  // Ajustar el arreglo de colores al cambiar cantidad de capas
+  while (localLayerColors.value.length < newCount) {
+    const idx = localLayerColors.value.length
+    localLayerColors.value.push({ fill: extractHex(colors[idx % 2].fill), stroke: extractHex(colors[idx % 2].stroke) })
+  }
+  if (localLayerColors.value.length > newCount) localLayerColors.value.length = newCount
+})
+
+// Auto / custom angle
+const autoAngle = ref(true)
+const localAngleStep = ref<number>(22.5)
+
+watch(() => N.value, (nv) => {
+  // si autoAngle, actualizar el paso por defecto según N
+  if (autoAngle.value) {
+    if (nv === 8) localAngleStep.value = 22.5
+    else if (nv === 16) localAngleStep.value = 11.25
+    else localAngleStep.value = 22.5
+  }
+})
+
+// Cálculo del paso angular efectivo: prop > custom (auto applies local defaults)
+const effectiveLayerAngleStepDeg = computed(() => {
+  if (typeof props.layerAngleStepDeg === 'number') return props.layerAngleStepDeg
+  return localAngleStep.value
+})
+const layerAngleStepRad = computed(() => effectiveLayerAngleStepDeg.value * Math.PI / 180)
+
+// Helpers
+function rotatePoint(p:{x:number;y:number}, angle:number){
+  const c = Math.cos(angle), s = Math.sin(angle)
+  return { x: p.x * c - p.y * s, y: p.x * s + p.y * c }
+}
+
+function colorWithAlpha(baseHex:string, alphaHex:string){
+  // baseHex puede ser #RRGGBB o #RRGGBBAA
+  if (baseHex.length === 7) return baseHex + alphaHex
+  return baseHex.slice(0,7) + alphaHex
+}
+
+function layerFill(baseFill:string, idx:number){
+  // Reduce la alpha por capa para enfatizar superposición
+  const baseAlphaHex = baseFill.length === 9 ? baseFill.slice(7) : 'ff'
+  const baseA = parseInt(baseAlphaHex, 16)
+  const newA = Math.max(8, Math.round(baseA / (1 + idx)))
+  const newAHex = newA.toString(16).padStart(2,'0')
+  return colorWithAlpha(baseFill, newAHex)
+}
+
+function layerStroke(baseStroke:string, idx:number){
+  return baseStroke
+}
+
+// Métodos de control
+function solo(i:number){
+  localLayersEnabled.value = localLayersEnabled.value.map((_, idx) => idx === (i-1))
+}
+function enableAll(){ localLayersEnabled.value = localLayersEnabled.value.map(() => true) }
+function disableAll(){ localLayersEnabled.value = localLayersEnabled.value.map(() => false) }
+function applyToProps(){
+  emit('update:layers', localLayers.value)
+  emit('update:layers-enabled', localLayersEnabled.value.slice())
+  if (!autoAngle.value) emit('update:layer-angle-step-deg', localAngleStep.value)
+}
+
+
 // Centro base del viewport (sin pan)
 const cx0 = 420, cy0 = 240
 // Centro efectivo = base + pan
@@ -43,11 +175,29 @@ function toPx(p:{x:number;y:number}) {
   return { x: cx.value + p.x*props.scale, y: cy.value - p.y*props.scale }
 }
 
-// ----- Zoom con rueda (igual que antes) -----
+function maxPanLimits(scale:number){
+  const margin = 12
+  const RocPx = Roc.value * scale
+  // Usamos cx0/cy0 como centro base
+  const minX = (margin + RocPx) - cx0
+  const maxX = (860 - (margin + RocPx)) - cx0
+  const minY = (margin + RocPx) - cy0
+  const maxY = (500 - (margin + RocPx)) - cy0
+  return { minX, maxX, minY, maxY }
+}
+
+// ----- Zoom con rueda (ahora clamp + ajuste de pan) -----
 function onWheel(e: WheelEvent) {
   e.preventDefault()
-  const delta = e.deltaY < 0 ? 0.02 : -0.02
-  emit('update:scale', clamp(props.scale + delta, 0.05, 0.8))
+  const step = props.wheelStep ?? 0.02
+  const delta = e.deltaY < 0 ? step : -step
+  const newScale = clamp(props.scale + delta, 0.05, 0.8)
+  const limits = maxPanLimits(newScale)
+  const clampedX = clamp(props.panX, limits.minX, limits.maxX)
+  const clampedY = clamp(props.panY, limits.minY, limits.maxY)
+  emit('update:scale', newScale)
+  emit('update:pan-x', clampedX)
+  emit('update:pan-y', clampedY)
 }
 
 // ----- Pan con arrastre (Pointer Events) -----
@@ -63,7 +213,7 @@ function onPointerDown(e: PointerEvent) {
   startClientY = e.clientY
   startPanX = props.panX
   startPanY = props.panY
-  svgEl.value.setPointerCapture(e.pointerId)
+  try { svgEl.value.setPointerCapture(e.pointerId) } catch {}
   // cambiar cursor
   svgEl.value.style.cursor = 'grabbing'
 }
@@ -73,13 +223,12 @@ function onPointerMove(e: PointerEvent) {
   const dx = e.clientX - startClientX
   const dy = e.clientY - startClientY
 
-  // Si QUIERES SOLO desplazar “hacia los lados” (eje X):
-  // emit('update:pan-x', startPanX + dx)
-  // emit('update:pan-y', startPanY)           // no mover Y
+  const limits = maxPanLimits(props.scale)
+  const newX = clamp(startPanX + dx, limits.minX, limits.maxX)
+  const newY = clamp(startPanY + dy, limits.minY, limits.maxY)
 
-  // Si quieres mover en X e Y:
-  emit('update:pan-x', startPanX + dx)
-  emit('update:pan-y', startPanY + dy)
+  emit('update:pan-x', newX)
+  emit('update:pan-y', newY)
 }
 
 function endDrag(e: PointerEvent) {
@@ -92,39 +241,109 @@ function endDrag(e: PointerEvent) {
 
 <template>
   
-<svg
-    ref="svgEl"
-    :width="860" :height="500"
-    @wheel.passive.prevent="onWheel"
-    @pointerdown="onPointerDown"
-    @pointermove="onPointerMove"
-    @pointerup="endDrag"
-    @pointercancel="endDrag"
-    @pointerleave="endDrag"
-    style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;box-shadow:0 2px 8px rgba(0,0,0,.06);cursor:grab"
-  >
+<div style="position:relative; display:inline-block">
+    <svg
+      ref="svgEl"
+      :width="860" :height="500"
+      @wheel.passive.prevent="onWheel"
+      @pointerdown="onPointerDown"
+      @pointermove="onPointerMove"
+      @pointerup="endDrag"
+      @pointercancel="endDrag"
+      @pointerleave="endDrag"
+      style="background:#d3d6df50;border:1px solid #ffffff;border-radius:12px;box-shadow:0 2px 8px rgba(0,0,0,.06);cursor:grab"
+    >
 
-    <!-- centro -->
-    <circle :cx="cx" :cy="cy" r="3" fill="#111827" />
+      <!-- centro -->
+      <circle :cx="cx" :cy="cy" r="3" fill="#11182770" />
 
-    <!-- Guías: círculos punteados (nominal) -->
-    <circle v-if="showGuides" :cx="cx" :cy="cy" :r="(Ri_nom*scale)"
-            fill="none" stroke="#d1d5db" stroke-width="1.6" stroke-dasharray="8 6"/>
-    <circle v-if="showGuides" :cx="cx" :cy="cy" :r="(Ro_nom*scale)"
-            fill="none" stroke="#9ca3af" stroke-width="1.6" stroke-dasharray="8 6"/>
+      <!-- TODOS los trapecios (corregidos) con capas superpuestas activables -->
+      <template v-for="i in localLayers" :key="`capa-${i}`">
+        <template v-for="k in N" :key="`trap-${k}`">
+          <polygon
+            v-if="localLayersEnabled[i-1]"
+            :points="[
+              rotatePoint(inner[(k-1+N)%N], (i-1) * layerAngleStepRad),
+              rotatePoint(inner[k%N], (i-1) * layerAngleStepRad),
+              rotatePoint(outer[k%N], (i-1) * layerAngleStepRad),
+              rotatePoint(outer[(k-1+N)%N], (i-1) * layerAngleStepRad)
+            ].map(q => toPx(q)).map(q => `${q.x},${q.y}`).join(' ')"
+            :fill="layerFill(localLayerColors[i-1].fill, i-1)"
+            :stroke="localLayerColors[i-1].stroke"
+            stroke-width="1"
+            stroke-linecap="round" stroke-linejoin="round"
+          />
+        </template>
+      </template>
 
-    <!-- TODOS los trapecios (corregidos) -->
-    <template v-for="k in N" :key="k">
-      <polygon
-        :points="[
-          toPx(inner[(k-1+N)%N]),
-          toPx(inner[k%N]),
-          toPx(outer[k%N]),
-          toPx(outer[(k-1+N)%N])
-        ].map(q=>`${q.x},${q.y}`).join(' ')"
-        fill="#93c5fd33" stroke="#2563eb" stroke-width="2"
-        stroke-linecap="round" stroke-linejoin="round"
-      />
-    </template>
-  </svg>
+      <!-- Guías: círculos punteados (nominal) -->
+      <circle v-if="showGuides" :cx="cx" :cy="cy" :r="(Ri_nom*scale)"
+              fill="none" stroke="#efb6b2" stroke-width="1" stroke-dasharray="2 1"/>
+      <circle v-if="showGuides" :cx="cx" :cy="cy" :r="(Ro_nom*scale)"
+              fill="none" stroke="#efa39e" stroke-width="1" stroke-dasharray="2 1"/>
+
+    </svg>
+
+    <!-- Panel de controles mejorado -->
+    <div class="controls-panel">
+      <div class="controls-header">
+        <div class="controls-title">Capas</div>
+        <input class="num-input" type="number" v-model.number="localLayers" min="3" max="8" />
+      </div>
+
+      <div class="controls-row">
+        <label class="switch"><input type="checkbox" v-model="autoAngle" /><span>Ángulo automático</span></label>
+      </div>
+
+      <div v-if="!autoAngle" class="controls-row">
+        <label>Ángulo (°)</label>
+        <input class="small-input" type="number" v-model.number="localAngleStep" step="0.1" />
+      </div>
+
+      <div class="layers-list">
+        <div v-for="i in localLayers" :key="i" class="layer-row">
+          <div class="layer-left">
+            <input class="color-input" type="color" v-model="localLayerColors[i-1].fill" :title="`Color capa ${i}`" />
+            <label class="layer-label"><input type="checkbox" v-model="localLayersEnabled[i-1]" /> Capa {{i}}</label>
+          </div>
+          <div class="layer-right">
+            <button class="btn-icon" @click="solo(i)" title="Mostrar solo">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 5C7.5 5 3.7 7.6 2 12c1.7 4.4 5.5 7 10 7s8.3-2.6 10-7c-1.7-4.4-5.5-7-10-7zm0 11a4 4 0 1 1 0-8 4 4 0 0 1 0 8z" fill="#374151"/></svg>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel-actions">
+        <button class="btn" @click="enableAll" title="Activar todas">Todas</button>
+        <button class="btn muted" @click="disableAll" title="Desactivar todas">Ninguna</button>
+        <button class="btn primary" @click="applyToProps" title="Aplicar cambios">Aplicar</button>
+      </div>
+    </div>
+  </div>
 </template>
+
+<style scoped>
+.controls-panel{
+  position:absolute; top:12px; right:12px; width:210px; background:#ffffff74; border-radius:10px; padding:10px; box-shadow:0 8px 20px rgba(14,30,37,0.08); font-size:13px; color:#111827; border:1px solid #eef2f7;
+}
+.controls-header{ display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px }
+.controls-title{ font-weight:700 }
+.num-input{ width:58px; padding:4px 6px; border-radius:6px; border:1px solid #e6e9ee }
+.small-input{ width:72px; padding:4px 6px; border-radius:6px; border:1px solid #e6e9ee }
+.controls-row{ display:flex; align-items:center; justify-content:space-between; margin-bottom:8px }
+.switch input{ margin-right:8px }
+.layers-list{ max-height:124px; overflow:auto; border-top:1px solid #f1f5f9; padding-top:8px }
+.layer-row{ display:flex; align-items:center; justify-content:space-between; padding:6px 0 }
+.layer-left{ display:flex; align-items:center; gap:8px }
+.swatch{ width:12px; height:12px; border-radius:999px; display:inline-block; box-shadow:0 1px 0 rgba(0,0,0,0.06) }
+.layer-label input{ margin-right:6px }
+.color-input{ width:28px; height:28px; border:1px solid #e6e9ee; border-radius:6px; cursor:pointer; padding:2px }
+.btn-icon{ background:transparent; border:none; padding:4px; border-radius:6px; cursor:pointer }
+.btn-icon:hover{ background:#f3f4f6 }
+.panel-actions{ display:flex; gap:6px; justify-content:flex-end; margin-top:8px }
+.btn{ padding:6px 8px; border-radius:8px; border:1px solid #e6e9ee; background:#fff; cursor:pointer; font-size:12px }
+.btn:hover{ box-shadow:0 4px 10px rgba(14,30,37,0.06) }
+.btn.muted{ color:#6b7280 }
+.btn.primary{ background:#111827; color:#ffffff; border-color:#111827 }
+</style>
