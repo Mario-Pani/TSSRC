@@ -6,6 +6,12 @@ import { computeDims, pickNByOD } from './utils/geometry'
 import { availableMaterials, type Material } from './utils/materials'
 
 const isDark = ref(true)
+const activeTab = ref(0)
+
+// Materials tab state
+const materialsSearch = ref('')
+const sortField = ref<'thickness' | 'length' | 'width'>('thickness')
+const sortAsc = ref(true)
 
 const ID = ref<number>(1200)
 const OD = ref<number>(1500)
@@ -169,6 +175,49 @@ const thicknessPerLayer = computed(() => {
   return TH.value > 0 ? TH.value / layers.value : 0
 })
 
+// Materiales filtrados y ordenados
+const filteredAndSortedMaterials = computed(() => {
+  let filtered = availableMaterials
+  
+  if (materialsSearch.value) {
+    const search = materialsSearch.value.toLowerCase()
+    filtered = filtered.filter(m => 
+      m.thickness.toString().includes(search) ||
+      m.length.toString().includes(search) ||
+      m.width.toString().includes(search)
+    )
+  }
+
+  const sorted = filtered.slice().sort((a, b) => {
+    let aVal: number, bVal: number
+    const field = sortField.value
+    
+    if (field === 'thickness') {
+      aVal = a.thickness
+      bVal = b.thickness
+    } else if (field === 'length') {
+      aVal = a.length
+      bVal = b.length
+    } else {
+      aVal = a.width
+      bVal = b.width
+    }
+    
+    return sortAsc.value ? aVal - bVal : bVal - aVal
+  })
+
+  return sorted
+})
+
+function sortBy(field: 'thickness' | 'length' | 'width') {
+  if (sortField.value === field) {
+    sortAsc.value = !sortAsc.value
+  } else {
+    sortField.value = field
+    sortAsc.value = true
+  }
+}
+
 watch(() => layers.value, (newCount) => {
   const count = Math.max(3, newCount)
   layers.value = count
@@ -290,7 +339,15 @@ watch(layerCombination, (combo) => {
     </v-app-bar>
 
     <v-main>
-      <v-container class="py-6">
+      <v-tabs v-model="activeTab" grow>
+        <v-tab value="0">Diseño</v-tab>
+        <v-tab value="1">Materiales Disponibles</v-tab>
+      </v-tabs>
+
+      <v-window v-model="activeTab">
+        <!-- TAB 0: DISEÑO -->
+        <v-window-item value="0">
+          <v-container class="py-6">
         <v-row dense>
           <!-- ENTRADAS -->  
             <v-col cols="12" md="5">
@@ -410,7 +467,58 @@ watch(layerCombination, (combo) => {
             </v-card>
           </v-col>
         </v-row>
-      </v-container>
+        </v-container>
+        </v-window-item>
+
+        <!-- TAB 1: MATERIALES DISPONIBLES -->
+        <v-window-item value="1">
+          <v-container class="py-6">
+            <v-card elevation="3">
+              <v-card-title class="text-h6">Estándares de Materiales Disponibles</v-card-title>
+              <v-card-text>
+                <v-text-field
+                  v-model="materialsSearch"
+                  type="text"
+                  label="Buscar por espesor..."
+                  prepend-icon="mdi-magnify"
+                  variant="outlined"
+                  density="comfortable"
+                  class="mb-4"
+                />
+                <div class="table-responsive">
+                  <table class="materials-table">
+                    <thead>
+                      <tr>
+                        <th @click="sortBy('thickness')" style="cursor: pointer;">
+                          Espesor (mm)
+                          <span class="sort-icon">{{ sortField === 'thickness' ? (sortAsc ? '↑' : '↓') : '⇅' }}</span>
+                        </th>
+                        <th @click="sortBy('length')" style="cursor: pointer;">
+                          Largo (mm)
+                          <span class="sort-icon">{{ sortField === 'length' ? (sortAsc ? '↑' : '↓') : '⇅' }}</span>
+                        </th>
+                        <th @click="sortBy('width')" style="cursor: pointer;">
+                          Ancho (mm)
+                          <span class="sort-icon">{{ sortField === 'width' ? (sortAsc ? '↑' : '↓') : '⇅' }}</span>
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="(mat, idx) in filteredAndSortedMaterials" :key="idx">
+                        <td>{{ mat.thickness }}</td>
+                        <td>{{ mat.length }}</td>
+                        <td>{{ mat.width }}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+                <v-divider class="my-4"></v-divider>
+                <p class="text-caption text-disabled">Total: {{ filteredAndSortedMaterials.length }} materiales</p>
+              </v-card-text>
+            </v-card>
+          </v-container>
+        </v-window-item>
+      </v-window>
     </v-main>
   </v-app>
 </template>
@@ -419,4 +527,61 @@ watch(layerCombination, (combo) => {
 .d-grid { display:grid; grid-template-columns: 1fr; }
 @media (min-width: 768px) { .d-grid { grid-template-columns: 1fr 1fr; } }
 .ga-4 { gap: 1rem; }
+
+.table-responsive {
+  overflow-x: auto;
+  border-radius: 4px;
+  width: 100%;
+}
+
+.materials-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+  table-layout: fixed;
+}
+
+.materials-table thead {
+  background: linear-gradient(135deg, rgba(var(--v-theme-primary), 0.25) 0%, rgba(var(--v-theme-primary), 0.15) 100%);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  border-top: 2px solid rgba(var(--v-theme-primary), 0.5);
+}
+
+.materials-table thead th {
+  padding: 14px 12px;
+  text-align: left;
+  font-weight: 700;
+  font-size: 0.9rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  border-bottom: 3px solid rgba(var(--v-theme-primary), 0.5);
+  white-space: nowrap;
+  color: rgba(var(--v-theme-on-surface), 1);
+}
+
+.materials-table tbody tr {
+  border-bottom: 1px solid rgba(128, 128, 128, 0.12);
+  transition: background-color 0.2s;
+}
+
+.materials-table tbody tr:hover {
+  background-color: rgba(var(--v-theme-primary), 0.05);
+}
+
+.materials-table tbody td {
+  padding: 10px 8px;
+  text-align: left;
+}
+
+.materials-table tbody tr:nth-child(even) {
+  background-color: rgba(128, 128, 128, 0.02);
+}
+
+.sort-icon {
+  font-size: 0.85em;
+  margin-left: 4px;
+  opacity: 0.7;
+}
 </style>
