@@ -9,6 +9,7 @@ const props = defineProps<{
   wheelStep?: number;
   layers?: number; // número de capas superpuestas
   layersEnabled?: boolean[]; // array con flags (true/false) para cada capa
+  layersThicknesses?: number[]; // espesores por capa (mm)
   layerAngleStepDeg?: number; // opcional: forzar paso angular por capa (grados)
 }>()
 const emit = defineEmits<{
@@ -17,11 +18,21 @@ const emit = defineEmits<{
   (e:'update:pan-y', v:number): void
   (e: 'update:layers', v: number): void
   (e: 'update:layers-enabled', v: boolean[]): void
+  (e: 'update:layers-thicknesses', v: number[]): void
   (e: 'update:layer-angle-step-deg', v: number): void
 }>()
 
 
-const dims  = computed(() => computeDims(props.ID, props.OD, props.coeff))
+const lastDims = ref(computeDims(props.ID, props.OD, props.coeff))
+const dims  = computed(() => {
+  try {
+    const next = computeDims(props.ID, props.OD, props.coeff)
+    lastDims.value = next
+    return next
+  } catch {
+    return lastDims.value
+  }
+})
 const N     = computed(() => dims.value.N)
 
 // Guías nominales
@@ -104,6 +115,34 @@ watch(() => localLayers.value, (newCount) => {
   if (localLayerColors.value.length > newCount) localLayerColors.value.length = newCount
 })
 
+// Espesores por capa (mm)
+const localLayerThicknesses = ref<number[]>(
+  (props.layersThicknesses ?? Array.from({ length: localLayers.value }, () => 1)).slice(0, localLayers.value)
+)
+
+watch(() => props.layersThicknesses, (v) => {
+  if (Array.isArray(v)) {
+    localLayerThicknesses.value = v.slice(0, localLayers.value)
+    while (localLayerThicknesses.value.length < localLayers.value) {
+      localLayerThicknesses.value.push(1)
+    }
+  }
+})
+
+watch(() => localLayers.value, (newCount) => {
+  while (localLayerThicknesses.value.length < newCount) localLayerThicknesses.value.push(1)
+  if (localLayerThicknesses.value.length > newCount) localLayerThicknesses.value.length = newCount
+})
+
+function updateLayerThickness(i:number, raw:string){
+  const idx = i - 1
+  const value = Number(raw)
+  if (!Number.isFinite(value)) return
+  if (idx < 0 || idx >= localLayerThicknesses.value.length) return
+  localLayerThicknesses.value[idx] = value
+  emit('update:layers-thicknesses', localLayerThicknesses.value.slice())
+}
+
 // Auto / custom angle
 const autoAngle = ref(true)
 const localAngleStep = ref<number>(22.5)
@@ -150,15 +189,14 @@ function layerStroke(baseStroke:string, idx:number){
 }
 
 // Métodos de control
-function solo(i:number){
-  localLayersEnabled.value = localLayersEnabled.value.map((_, idx) => idx === (i-1))
+function updateLayerColor(i:number, value:string){
+  const idx = i - 1
+  if (!localLayerColors.value[idx]) return
+  localLayerColors.value[idx].fill = extractHex(value)
 }
-function enableAll(){ localLayersEnabled.value = localLayersEnabled.value.map(() => true) }
-function disableAll(){ localLayersEnabled.value = localLayersEnabled.value.map(() => false) }
-function applyToProps(){
-  emit('update:layers', localLayers.value)
-  emit('update:layers-enabled', localLayersEnabled.value.slice())
-  if (!autoAngle.value) emit('update:layer-angle-step-deg', localAngleStep.value)
+function toggleLayer(i:number){
+  const idx = i - 1
+  localLayersEnabled.value[idx] = !localLayersEnabled.value[idx]
 }
 
 
@@ -303,29 +341,48 @@ function endDrag(e: PointerEvent) {
       <div class="layers-list">
         <div v-for="i in localLayers" :key="i" class="layer-row">
           <div class="layer-left">
-            <input class="color-input" type="color" v-model="localLayerColors[i-1].fill" :title="`Color capa ${i}`" />
-            <label class="layer-label"><input type="checkbox" v-model="localLayersEnabled[i-1]" /> Capa {{i}}</label>
-          </div>
-          <div class="layer-right">
-            <button class="btn-icon" @click="solo(i)" title="Mostrar solo">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 5C7.5 5 3.7 7.6 2 12c1.7 4.4 5.5 7 10 7s8.3-2.6 10-7c-1.7-4.4-5.5-7-10-7zm0 11a4 4 0 1 1 0-8 4 4 0 0 1 0 8z" fill="#374151"/></svg>
+            <input
+              class="th-input"
+              type="number"
+              min="1"
+              step="0.1"
+              :value="localLayerThicknesses[i-1]"
+              :placeholder="`Capa ${i}`"
+              :title="`Espesor Capa ${i}`"
+              @change="updateLayerThickness(i, ($event.target as HTMLInputElement).value)"
+            />
+            <button
+              class="layer-toggle"
+              :class="{ active: localLayersEnabled[i-1] }"
+              type="button"
+              :title="`Capa ${i}`"
+              :aria-pressed="localLayersEnabled[i-1]"
+              @click="toggleLayer(i)"
+            >
+              <svg class="layer-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 4 3 8l9 4 9-4-9-4z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                <path d="M3 12l9 4 9-4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                <path d="M3 16l9 4 9-4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
             </button>
+            <input
+              class="color-input"
+              type="color"
+              :value="localLayerColors[i-1]?.fill"
+              :title="`Color capa ${i}`"
+              @input="updateLayerColor(i, ($event.target as HTMLInputElement).value)"
+            />
           </div>
         </div>
       </div>
 
-      <div class="panel-actions">
-        <button class="btn" @click="enableAll" title="Activar todas">Todas</button>
-        <button class="btn muted" @click="disableAll" title="Desactivar todas">Ninguna</button>
-        <button class="btn primary" @click="applyToProps" title="Aplicar cambios">Aplicar</button>
-      </div>
     </div>
   </div>
 </template>
 
 <style scoped>
 .controls-panel{
-  position:absolute; top:12px; right:12px; width:210px; background:#ffffff74; border-radius:10px; padding:10px; box-shadow:0 8px 20px rgba(14,30,37,0.08); font-size:13px; color:#111827; border:1px solid #eef2f7;
+  position:absolute; top:10px; right:10px; width: 170px; background:#ffffff74; border-radius:10px; padding:10px; box-shadow:0 8px 20px rgba(31, 109, 143, 0.251); font-size:13px; color:#111827; border:1px solid #eef2f7;
 }
 .controls-header{ display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px }
 .controls-title{ font-weight:700 }
@@ -333,17 +390,15 @@ function endDrag(e: PointerEvent) {
 .small-input{ width:72px; padding:4px 6px; border-radius:6px; border:1px solid #e6e9ee }
 .controls-row{ display:flex; align-items:center; justify-content:space-between; margin-bottom:8px }
 .switch input{ margin-right:8px }
-.layers-list{ max-height:124px; overflow:auto; border-top:1px solid #f1f5f9; padding-top:8px }
+.layers-list{ max-height:140px; overflow:auto; border-top:1px solid #f1f5f9; padding-top:8px }
 .layer-row{ display:flex; align-items:center; justify-content:space-between; padding:6px 0 }
 .layer-left{ display:flex; align-items:center; gap:8px }
 .swatch{ width:12px; height:12px; border-radius:999px; display:inline-block; box-shadow:0 1px 0 rgba(0,0,0,0.06) }
-.layer-label input{ margin-right:6px }
+.layer-icon{ width:16px; height:16px; color:#374151 }
 .color-input{ width:28px; height:28px; border:1px solid #e6e9ee; border-radius:6px; cursor:pointer; padding:2px }
-.btn-icon{ background:transparent; border:none; padding:4px; border-radius:6px; cursor:pointer }
-.btn-icon:hover{ background:#f3f4f6 }
-.panel-actions{ display:flex; gap:6px; justify-content:flex-end; margin-top:8px }
-.btn{ padding:6px 8px; border-radius:8px; border:1px solid #e6e9ee; background:#fff; cursor:pointer; font-size:12px }
-.btn:hover{ box-shadow:0 4px 10px rgba(14,30,37,0.06) }
-.btn.muted{ color:#6b7280 }
-.btn.primary{ background:#111827; color:#ffffff; border-color:#111827 }
+.th-input{ width:58px; padding:4px 6px; border-radius:6px; border:1px solid #e6e9ee }
+.layer-toggle{ display:inline-flex; align-items:center; justify-content:center; width:28px; height:28px; border:1px solid #e6e9ee; border-radius:6px; background:#ffffff; cursor:pointer }
+.layer-toggle:hover{ background:#f3f4f6 }
+.layer-toggle.active{ background:#6493f96b; border-color:#ffffffbc }
+.layer-toggle.active .layer-icon{ color:#ffffff }
 </style>

@@ -3,6 +3,7 @@
 import { ref, computed, watch } from 'vue'
 import PreviewCanvas from './components/PreviewCanvas.vue'
 import { computeDims, pickNByOD } from './utils/geometry'
+import { availableMaterials, type Material } from './utils/materials'
 
 const isDark = ref(true)
 
@@ -14,6 +15,10 @@ const TH = ref<number>(12)
 
 // Capas (sincronizado con PreviewCanvas)
 const layers = ref<number>(3)
+const layerThicknesses = ref<number[]>(Array.from({ length: layers.value }, () => TH.value / layers.value))
+const skipThicknessSync = ref(false)
+const syncingRecommendation = ref(false)
+const suppressRecommendation = ref(false)
 
 // Validador para TH
 const THRules = [
@@ -28,27 +33,45 @@ function validateTH() {
 }
 
 // Materiales disponibles (TH en mm, L y W en mm)
-interface Material {
-  thickness: number
-  length: number
-  width: number
-}
-
-const availableMaterials: Material[] = [
-  { thickness: 1, length: 3200, width: 2000 },
-  { thickness: 2, length: 3200, width: 2000 },
-  { thickness: 3, length: 3200, width: 2000 },
-  { thickness: 4, length: 3200, width: 2000 },
-  { thickness: 5, length: 3200, width: 2000 },
-  { thickness: 6, length: 3200, width: 2000 },
-  { thickness: 7, length: 3200, width: 2000 }
-]
 
 // Encontrar la mejor combinación de capas
 interface LayerCombination {
   layers: Material[]
   totalThickness: number
   layerCount: number
+}
+
+function uniqueMaterialsByThickness(materials: Material[]) {
+  const byThickness = new Map<number, Material>()
+  for (const mat of materials) {
+    if (!byThickness.has(mat.thickness)) {
+      byThickness.set(mat.thickness, mat)
+    }
+  }
+  return Array.from(byThickness.values())
+}
+
+function pickClosestMaterials(materials: Material[], target: number, maxCount: number) {
+  return [...materials]
+    .sort((a, b) => Math.abs(a.thickness - target) - Math.abs(b.thickness - target))
+    .slice(0, maxCount)
+}
+
+function recommendLayerCount(targetTH: number, minLayers = 3, maxLayers = 8) {
+  let bestCount = minLayers
+  let bestDiff = Number.POSITIVE_INFINITY
+
+  for (let count = minLayers; count <= maxLayers; count++) {
+    const combo = findBestLayerCombination(targetTH, count)
+    if (!combo) continue
+    const diff = Math.abs(combo.totalThickness - targetTH)
+    if (diff < bestDiff) {
+      bestDiff = diff
+      bestCount = count
+    }
+  }
+
+  return bestCount
 }
 
 function findBestLayerCombination(targetTH: number, layerCount: number): LayerCombination | null {
@@ -58,7 +81,10 @@ function findBestLayerCombination(targetTH: number, layerCount: number): LayerCo
   const pairCount = Math.floor(numLayers / 2)
   const hasCenter = numLayers % 2 === 1
 
-  const materials = availableMaterials
+  const uniqueMaterials = uniqueMaterialsByThickness(availableMaterials)
+  const candidateCount = 6
+  const targetPerLayer = targetTH / numLayers
+  const materials = pickClosestMaterials(uniqueMaterials, targetPerLayer, candidateCount)
 
   function buildLayers(pairThicknesses: Material[], center?: Material): Material[] {
     const left = pairThicknesses.map(p => p)
@@ -141,6 +167,117 @@ const showGuides = ref(true)
 // Espesor por capa
 const thicknessPerLayer = computed(() => {
   return TH.value > 0 ? TH.value / layers.value : 0
+})
+
+watch(() => layers.value, (newCount) => {
+  const count = Math.max(3, newCount)
+  layers.value = count
+  while (layerThicknesses.value.length < count) {
+    layerThicknesses.value.push(TH.value / count)
+  }
+  if (layerThicknesses.value.length > count) layerThicknesses.value.length = count
+})
+
+watch(() => TH.value, () => {
+  if (skipThicknessSync.value) {
+    skipThicknessSync.value = false
+    return
+  }
+  const recommended = recommendLayerCount(TH.value)
+  if (layers.value !== recommended) {
+    layers.value = recommended
+  }
+  const count = Math.max(3, layers.value)
+  layerThicknesses.value = Array.from({ length: count }, () => TH.value / count)
+})
+
+function normalizeSymmetricThicknesses(input: number[], count: number, total: number, prev: number[]) {
+  const result = input.slice(0, count)
+  while (result.length < count) result.push(total / count || 1)
+
+  const pairCount = Math.floor(count / 2)
+  const hasCenter = count % 2 === 1
+  const centerIdx = Math.floor(count / 2)
+  const midLeft = count / 2 - 1
+  const midRight = count / 2
+
+  const centerEdited = hasCenter && prev[centerIdx] !== undefined && result[centerIdx] !== prev[centerIdx]
+  const middlePairEdited = !hasCenter && (
+    (prev[midLeft] !== undefined && result[midLeft] !== prev[midLeft]) ||
+    (prev[midRight] !== undefined && result[midRight] !== prev[midRight])
+  )
+
+  if (hasCenter && centerEdited) {
+    const centerVal = result[centerIdx]
+    const pairVal = pairCount > 0 ? (total - centerVal) / (2 * pairCount) : 0
+    for (let i = 0; i < pairCount; i++) {
+      result[i] = pairVal
+      result[count - 1 - i] = pairVal
+    }
+    result[centerIdx] = centerVal
+    return result
+  }
+
+  if (!hasCenter && middlePairEdited) {
+    const pairVal = total / (2 * pairCount)
+    for (let i = 0; i < pairCount; i++) {
+      result[i] = pairVal
+      result[count - 1 - i] = pairVal
+    }
+    return result
+  }
+
+  // Default: mirror pairs from input, then set center or middle pair to keep total
+  for (let i = 0; i < pairCount; i++) {
+    result[count - 1 - i] = result[i]
+  }
+
+  if (hasCenter) {
+    const sumPairs = result.reduce((sum, v, idx) => idx === centerIdx ? sum : sum + v, 0)
+    result[centerIdx] = total - sumPairs
+  } else {
+    const sumWithoutMiddle = result.reduce((sum, v, idx) => (idx === midLeft || idx === midRight) ? sum : sum + v, 0)
+    const midVal = (total - sumWithoutMiddle) / 2
+    result[midLeft] = midVal
+    result[midRight] = midVal
+  }
+
+  return result
+}
+
+function onUpdateLayerThicknesses(v: number[]) {
+  const count = Math.max(3, layers.value)
+  const normalized = normalizeSymmetricThicknesses(v, count, TH.value, layerThicknesses.value)
+
+  if (!sameNumberArray(normalized, layerThicknesses.value)) {
+    layerThicknesses.value = normalized
+  }
+
+  suppressRecommendation.value = true
+}
+
+function sameNumberArray(a: number[], b: number[]) {
+  if (a.length !== b.length) return false
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false
+  }
+  return true
+}
+
+watch(layerCombination, (combo) => {
+  if (!combo) return
+  if (suppressRecommendation.value) {
+    suppressRecommendation.value = false
+    return
+  }
+  const recommended = combo.layers.map(m => m.thickness)
+
+  if (!sameNumberArray(recommended, layerThicknesses.value)) {
+    syncingRecommendation.value = true
+    layerThicknesses.value = recommended
+  }
+
+  if (syncingRecommendation.value) syncingRecommendation.value = false
 })
 </script>
 
@@ -226,11 +363,13 @@ const thicknessPerLayer = computed(() => {
                   :scale="scale" :wheel-step="wheelStep"
                   :pan-x="panX" :pan-y="panY"
                   :layers="layers"
+                  :layers-thicknesses="layerThicknesses"
                   :showGuides="showGuides"
                   @update:scale="v => scale = v"
                   @update:pan-x="v => panX = v"
                   @update:pan-y="v => panY = v"
                   @update:layers="v => layers = Math.max(3, v)"
+                  @update:layers-thicknesses="onUpdateLayerThicknesses"
                 />
               </v-card-text>
 
