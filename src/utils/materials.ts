@@ -2,6 +2,7 @@ export interface Material {
   thickness: number
   length: number
   width: number
+  inStock?: boolean
 }
 
 export const availableMaterials: Material[] = [

@@ -8,6 +8,112 @@ import { availableMaterials, type Material } from './utils/materials'
 const isDark = ref(true)
 const activeTab = ref(0)
 
+// Materials management
+const initializeMaterials = (): Material[] => {
+  const stored = localStorage.getItem('materials')
+  if (stored) {
+    try {
+      return JSON.parse(stored)
+    } catch {
+      return availableMaterials.map(m => ({ ...m, inStock: true }))
+    }
+  }
+  return availableMaterials.map(m => ({ ...m, inStock: true }))
+}
+
+const materials = ref<Material[]>(initializeMaterials())
+
+// Modal state
+const showMaterialModal = ref(false)
+const editingIndex = ref<number | null>(null)
+const editingMaterial = ref<Material>({
+  thickness: 1,
+  length: 1065,
+  width: 762,
+  inStock: true
+})
+
+// Watch materials to save to localStorage
+watch(() => materials.value, (newMaterials) => {
+  localStorage.setItem('materials', JSON.stringify(newMaterials))
+}, { deep: true })
+
+function openAddMaterialDialog() {
+  editingIndex.value = null
+  editingMaterial.value = {
+    thickness: 1,
+    length: 1065,
+    width: 762,
+    inStock: true
+  }
+  showMaterialModal.value = true
+}
+
+function openEditMaterialDialog(idx: number) {
+  editingIndex.value = idx
+  editingMaterial.value = { ...materials.value[idx] }
+  showMaterialModal.value = true
+}
+
+function saveMaterial() {
+  if (editingIndex.value === null) {
+    materials.value.push({ ...editingMaterial.value })
+  } else {
+    materials.value[editingIndex.value] = { ...editingMaterial.value }
+  }
+  showMaterialModal.value = false
+}
+
+function deleteMaterial(idx: number) {
+  if (confirm('¿Eliminar este material?')) {
+    materials.value.splice(idx, 1)
+  }
+}
+
+function exportMaterials() {
+  const dataStr = JSON.stringify(materials.value, null, 2)
+  const dataBlob = new Blob([dataStr], { type: 'application/json' })
+  const url = URL.createObjectURL(dataBlob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = `materials-${new Date().toISOString().split('T')[0]}.json`
+  link.click()
+  URL.revokeObjectURL(url)
+}
+
+function triggerImportFile() {
+  const importInput = document.getElementById('importInput') as HTMLInputElement
+  importInput?.click()
+}
+
+function importMaterials(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file) return
+
+  const reader = new FileReader()
+  reader.onload = (e) => {
+    try {
+      const imported = JSON.parse(e.target?.result as string)
+      if (Array.isArray(imported) && imported.every(m => 
+        typeof m.thickness === 'number' && 
+        typeof m.length === 'number' && 
+        typeof m.width === 'number'
+      )) {
+        materials.value = imported.map(m => ({ ...m, inStock: m.inStock ?? true }))
+        alert('Materiales importados correctamente')
+      } else {
+        alert('Formato de archivo inválido')
+      }
+    } catch {
+      alert('Error al leer el archivo')
+    }
+  }
+  reader.readAsText(file)
+  const importInputEl = document.getElementById('importInput') as HTMLInputElement
+  if (importInputEl) importInputEl.value = ''
+}
+
 // Materials tab state
 const materialsSearch = ref('')
 const sortField = ref<'thickness' | 'length' | 'width'>('thickness')
@@ -87,10 +193,13 @@ function findBestLayerCombination(targetTH: number, layerCount: number): LayerCo
   const pairCount = Math.floor(numLayers / 2)
   const hasCenter = numLayers % 2 === 1
 
-  const uniqueMaterials = uniqueMaterialsByThickness(availableMaterials)
+  // Filtrar solo materiales en stock
+  const inStockMaterials = materials.value.filter(m => m.inStock !== false)
+  
+  const uniqueMats = uniqueMaterialsByThickness(inStockMaterials)
   const candidateCount = 6
   const targetPerLayer = targetTH / numLayers
-  const materials = pickClosestMaterials(uniqueMaterials, targetPerLayer, candidateCount)
+  const candidateMats = pickClosestMaterials(uniqueMats, targetPerLayer, candidateCount)
 
   function buildLayers(pairThicknesses: Material[], center?: Material): Material[] {
     const left = pairThicknesses.map(p => p)
@@ -112,7 +221,7 @@ function findBestLayerCombination(targetTH: number, layerCount: number): LayerCo
   function recursePairs(idx: number, current: Material[]) {
     if (idx === pairCount) {
       if (hasCenter) {
-        for (const center of materials) {
+        for (const center of candidateMats) {
           evalCombination(buildLayers(current, center))
         }
       } else {
@@ -121,7 +230,7 @@ function findBestLayerCombination(targetTH: number, layerCount: number): LayerCo
       return
     }
 
-    for (const mat of materials) {
+    for (const mat of candidateMats) {
       current.push(mat)
       recursePairs(idx + 1, current)
       current.pop()
@@ -177,7 +286,7 @@ const thicknessPerLayer = computed(() => {
 
 // Materiales filtrados y ordenados
 const filteredAndSortedMaterials = computed(() => {
-  let filtered = availableMaterials
+  let filtered = materials.value
   
   if (materialsSearch.value) {
     const search = materialsSearch.value.toLowerCase()
@@ -335,7 +444,20 @@ watch(layerCombination, (combo) => {
     <v-app-bar color="primary" elevation="2">
       <v-app-bar-title class="text-subtitle-1 font-weight-medium">Anillo Estático en Segmentos Trapezoidales</v-app-bar-title>
       <v-spacer />
-      <v-switch v-model="isDark" density="compact" inset hide-details :label="isDark ? 'Oscuro' : 'Claro'"/>
+      <v-tooltip :text="isDark ? 'Oscuro' : 'Claro'">
+        <template #activator="{ props }">
+          <v-btn
+            v-bind="props"
+            icon
+            size="small"
+            variant="tonal"
+            :color="isDark ? 'info' : 'warning'"
+            @click="isDark = !isDark"
+          >
+            <v-icon>{{ isDark ? 'mdi-weather-night' : 'mdi-white-balance-sunny' }}</v-icon>
+          </v-btn>
+        </template>
+      </v-tooltip>
     </v-app-bar>
 
     <v-main>
@@ -353,8 +475,20 @@ watch(layerCombination, (combo) => {
             <v-col cols="12" md="5">
             <v-card elevation="3">
               <v-card-title class="text-h6">Entradas</v-card-title>
-              <v-switch v-model="showGuides"  color="red"
-              label="Mostrar líneas ID/OD"/>
+              <v-tooltip :text="showGuides ? 'Ocultar líneas ID/OD' : 'Mostrar líneas ID/OD'">
+                <template #activator="{ props }">
+                  <v-btn
+                    v-bind="props"
+                    size="small"
+                    variant="tonal"
+                    :color="showGuides ? 'success' : 'secondary'"
+                    @click="showGuides = !showGuides"
+                  >
+                    <v-icon start>{{ showGuides ? 'mdi-eye' : 'mdi-eye-off' }}</v-icon>
+                    Líneas ID/OD
+                  </v-btn>
+                </template>
+              </v-tooltip>
               <v-card-text>
                 <div class="d-grid ga-4">
                   <!-- ID -->
@@ -474,7 +608,27 @@ watch(layerCombination, (combo) => {
         <v-window-item value="1">
           <v-container class="py-6">
             <v-card elevation="3">
-              <v-card-title class="text-h6">Estándares de Materiales Disponibles</v-card-title>
+              <v-card-title class="d-flex justify-space-between align-center">
+                <span>Estándares de Materiales Disponibles</span>
+                <div class="d-flex gap-2">
+                  <v-tooltip text="Agregar nuevo material">
+                    <template #activator="{ props }">
+                      <v-btn size="small" color="success" icon="mdi-plus" @click="openAddMaterialDialog" v-bind="props" />
+                    </template>
+                  </v-tooltip>
+                  <v-tooltip text="Descargar materiales como JSON">
+                    <template #activator="{ props }">
+                      <v-btn size="small" color="info" icon="mdi-download" @click="exportMaterials" v-bind="props" />
+                    </template>
+                  </v-tooltip>
+                  <v-tooltip text="Cargar materiales desde JSON">
+                    <template #activator="{ props }">
+                      <v-btn size="small" color="warning" icon="mdi-upload" @click="triggerImportFile" v-bind="props" />
+                    </template>
+                  </v-tooltip>
+                  <input id="importInput" type="file" accept=".json" style="display:none" @change="importMaterials" />
+                </div>
+              </v-card-title>
               <v-card-text>
                 <v-text-field
                   v-model="materialsSearch"
@@ -501,6 +655,8 @@ watch(layerCombination, (combo) => {
                           Ancho (mm)
                           <span class="sort-icon">{{ sortField === 'width' ? (sortAsc ? '↑' : '↓') : '⇅' }}</span>
                         </th>
+                        <th>En Stock</th>
+                        <th>Acciones</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -508,6 +664,33 @@ watch(layerCombination, (combo) => {
                         <td>{{ mat.thickness }}</td>
                         <td>{{ mat.length }}</td>
                         <td>{{ mat.width }}</td>
+                        <td>
+                          <v-tooltip :text="materials[materials.indexOf(mat)].inStock ? 'En Stock' : 'Fuera de Stock'">
+                            <template #activator="{ props }">
+                              <v-btn
+                                :color="materials[materials.indexOf(mat)].inStock ? 'success' : 'error'"
+                                :icon="materials[materials.indexOf(mat)].inStock ? 'mdi-check-circle' : 'mdi-close-circle'"
+                                size="small"
+                                @click="materials[materials.indexOf(mat)].inStock = !materials[materials.indexOf(mat)].inStock"
+                                v-bind="props"
+                              />
+                            </template>
+                          </v-tooltip>
+                        </td>
+                        <td>
+                          <div class="d-flex gap-1">
+                            <v-tooltip text="Editar">
+                              <template #activator="{ props }">
+                                <v-btn size="x-small" icon="mdi-pencil" color="primary" @click="openEditMaterialDialog(materials.indexOf(mat))" v-bind="props" />
+                              </template>
+                            </v-tooltip>
+                            <v-tooltip text="Eliminar">
+                              <template #activator="{ props }">
+                                <v-btn size="x-small" icon="mdi-delete" color="error" @click="deleteMaterial(materials.indexOf(mat))" v-bind="props" />
+                              </template>
+                            </v-tooltip>
+                          </div>
+                        </td>
                       </tr>
                     </tbody>
                   </table>
@@ -516,6 +699,50 @@ watch(layerCombination, (combo) => {
                 <p class="text-caption text-disabled">Total: {{ filteredAndSortedMaterials.length }} materiales</p>
               </v-card-text>
             </v-card>
+
+            <!-- MODAL AGREGAR/EDITAR MATERIAL -->
+            <v-dialog v-model="showMaterialModal" max-width="400px">
+              <v-card>
+                <v-card-title>{{ editingIndex === null ? 'Agregar Material' : 'Editar Material' }}</v-card-title>
+                <v-card-text class="d-grid ga-4">
+                  <v-text-field
+                    v-model.number="editingMaterial.thickness"
+                    type="number"
+                    label="Espesor (mm)"
+                    step="0.1"
+                    min="0.1"
+                    variant="outlined"
+                    dense
+                  />
+                  <v-text-field
+                    v-model.number="editingMaterial.length"
+                    type="number"
+                    label="Largo (mm)"
+                    min="1"
+                    variant="outlined"
+                    dense
+                  />
+                  <v-text-field
+                    v-model.number="editingMaterial.width"
+                    type="number"
+                    label="Ancho (mm)"
+                    min="1"
+                    variant="outlined"
+                    dense
+                  />
+                  <v-switch
+                    v-model="editingMaterial.inStock"
+                    label="En Stock"
+                    hide-details
+                  />
+                </v-card-text>
+                <v-card-actions>
+                  <v-spacer></v-spacer>
+                  <v-btn color="error" @click="showMaterialModal = false">Cancelar</v-btn>
+                  <v-btn color="success" @click="saveMaterial">Guardar</v-btn>
+                </v-card-actions>
+              </v-card>
+            </v-dialog>
           </v-container>
         </v-window-item>
       </v-window>
@@ -527,6 +754,10 @@ watch(layerCombination, (combo) => {
 .d-grid { display:grid; grid-template-columns: 1fr; }
 @media (min-width: 768px) { .d-grid { grid-template-columns: 1fr 1fr; } }
 .ga-4 { gap: 1rem; }
+.gap-2 { gap: 0.5rem; }
+.d-flex { display: flex; }
+.justify-space-between { justify-content: space-between; }
+.align-center { align-items: center; }
 
 .table-responsive {
   overflow-x: auto;
@@ -538,7 +769,6 @@ watch(layerCombination, (combo) => {
   width: 100%;
   border-collapse: collapse;
   font-size: 0.875rem;
-  table-layout: fixed;
 }
 
 .materials-table thead {

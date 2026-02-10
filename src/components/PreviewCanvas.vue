@@ -315,10 +315,10 @@ function endDrag(e: PointerEvent) {
       </template>
 
       <!-- Guías: círculos punteados (nominal) -->
-      <circle v-if="showGuides" :cx="cx" :cy="cy" :r="(Ri_nom*scale)"
-              fill="none" stroke="#efb6b2" stroke-width="1" stroke-dasharray="2 1"/>
-      <circle v-if="showGuides" :cx="cx" :cy="cy" :r="(Ro_nom*scale)"
-              fill="none" stroke="#efa39e" stroke-width="1" stroke-dasharray="2 1"/>
+            <circle v-if="showGuides" :cx="cx" :cy="cy" :r="(Ri_nom*scale)"
+              fill="none" stroke="#dd7ed6" stroke-width="1.5" stroke-dasharray="3 2"/>
+            <circle v-if="showGuides" :cx="cx" :cy="cy" :r="(Ro_nom*scale)"
+              fill="none" stroke="#bd35d5" stroke-width="1.5" stroke-dasharray="3 2"/>
 
     </svg>
 
