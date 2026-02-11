@@ -119,6 +119,256 @@ const materialsSearch = ref('')
 const sortField = ref<'thickness' | 'length' | 'width'>('thickness')
 const sortAsc = ref(true)
 
+// Cutting tab state
+const selectedMaterialForCutting = ref<number | null>(null)
+const sheetLength = ref(3200)
+const sheetWidth = ref(2108)
+const kerf = ref(3) // Separación de corte en mm
+const canvasWidth = 700
+const canvasHeight = 500
+
+// Materiales en stock para selector
+const inStockMaterials = computed(() => {
+  return materials.value
+    .map((m, index) => ({
+      index,
+      label: `${m.thickness}mm × ${m.length}mm × ${m.width}mm`,
+      ...m
+    }))
+    .filter(m => m.inStock !== false)
+})
+
+// Actualizar dimensiones de hoja cuando se selecciona un material
+watch(selectedMaterialForCutting, (idx) => {
+  if (idx !== null && materials.value[idx]) {
+    const mat = materials.value[idx]
+    sheetLength.value = mat.length
+    sheetWidth.value = mat.width
+  }
+})
+
+// Cálculos de optimización de corte con alternancia horizontal
+const trapezoidBoundingBox = computed(() => {
+  const d = dims.value
+  if (!d) return { width: 0, height: 0, effectiveWidth: 0 }
+  
+  const width = d.s_out
+  const height = d.h
+  
+  // Cuando dos trapecios se alternan horizontalmente (normal + invertido al lado),
+  // el ancho efectivo del par se reduce porque encajan las caras inclinadas
+  const reduction = (d.s_out - d.s_in) / 2
+  const effectiveWidth = 2 * width - reduction
+  
+  return { width, height, effectiveWidth }
+})
+
+const trapezoidsPerSheet = computed(() => {
+  const box = trapezoidBoundingBox.value
+  if (box.width === 0 || box.height === 0) return 0
+  
+  const d = dims.value
+  if (!d) return 0
+  
+  const heightWithKerf = box.height + kerf.value
+  
+  // Pares de trapecios alternados horizontalmente
+  const pairWidth = box.effectiveWidth + kerf.value
+  const pairs = Math.floor(sheetLength.value / pairWidth)
+  
+  // Trapecios por par (2)
+  let trapsPerRow = pairs * 2
+  
+  // Verificar si cabe un trapecio adicional individual
+  const remainingWidth = sheetLength.value - (pairs * pairWidth)
+  const singleWidth = box.width + kerf.value
+  if (remainingWidth >= singleWidth) {
+    trapsPerRow += 1
+  }
+  
+  // Filas
+  const rows = Math.floor(sheetWidth.value / heightWithKerf)
+  
+  return trapsPerRow * rows
+})
+
+const wastePercentage = computed(() => {
+  const d = dims.value
+  if (!d) return 0
+  
+  const totalSheetArea = sheetLength.value * sheetWidth.value
+  
+  // Área aproximada de un trapecio
+  const trapArea = ((d.s_in + d.s_out) / 2) * d.h
+  const usedArea = trapezoidsPerSheet.value * trapArea
+  
+  return ((totalSheetArea - usedArea) / totalSheetArea) * 100
+})
+
+// Escala para dibujar la hoja en el canvas
+const cuttingScale = computed(() => {
+  const maxW = canvasWidth - 40
+  const maxH = canvasHeight - 40
+  const scaleW = maxW / sheetLength.value
+  const scaleH = maxH / sheetWidth.value
+  return Math.min(scaleW, scaleH)
+})
+
+const sheetScaledWidth = computed(() => {
+  return sheetLength.value * cuttingScale.value
+})
+
+const sheetScaledHeight = computed(() => {
+  return sheetWidth.value * cuttingScale.value
+})
+
+// Layout de nesting - generar posiciones de trapecios alternados horizontalmente
+const nestingLayout = computed<Array<{ points: string; centerX: number; centerY: number }>>(() => {
+  const d = dims.value
+  if (!d) return []
+  
+  const traps: Array<{ points: string; centerX: number; centerY: number }> = []
+  const scale = cuttingScale.value
+  const offsetX = 20
+  const offsetY = 20
+  
+  const s_in = d.s_in
+  const s_out = d.s_out
+  const h = d.h
+  
+  const heightWithKerf = h + kerf.value
+  const rows = Math.floor(sheetWidth.value / heightWithKerf)
+  
+  const box = trapezoidBoundingBox.value
+  const pairWidth = box.effectiveWidth + kerf.value
+  const pairs = Math.floor(sheetLength.value / pairWidth)
+  
+  const reduction = (s_out - s_in) / 2
+  
+  for (let row = 0; row < rows; row++) {
+    const baseY = row * heightWithKerf
+    let currentX = 0
+    
+    // Pares alternados en la misma fila
+    for (let pair = 0; pair < pairs; pair++) {
+      // Trapecio NORMAL (base ancha abajo)
+      const offsetLeft = (s_out - s_in) / 2
+      
+      const n1 = { x: currentX + offsetLeft, y: baseY }
+      const n2 = { x: currentX + offsetLeft + s_in, y: baseY }
+      const n3 = { x: currentX + s_out, y: baseY + h }
+      const n4 = { x: currentX, y: baseY + h }
+      
+      traps.push({
+        points: `${offsetX + n1.x * scale},${offsetY + n1.y * scale} ${offsetX + n2.x * scale},${offsetY + n2.y * scale} ${offsetX + n3.x * scale},${offsetY + n3.y * scale} ${offsetX + n4.x * scale},${offsetY + n4.y * scale}`,
+        centerX: offsetX + (currentX + s_out / 2) * scale,
+        centerY: offsetY + (baseY + h / 2) * scale
+      })
+      
+      currentX += s_out - reduction + kerf.value
+      
+      // Trapecio INVERTIDO (base ancha arriba) al lado
+      const inv1 = { x: currentX, y: baseY }
+      const inv2 = { x: currentX + s_out, y: baseY }
+      const inv3 = { x: currentX + offsetLeft + s_in, y: baseY + h }
+      const inv4 = { x: currentX + offsetLeft, y: baseY + h }
+      
+      traps.push({
+        points: `${offsetX + inv1.x * scale},${offsetY + inv1.y * scale} ${offsetX + inv2.x * scale},${offsetY + inv2.y * scale} ${offsetX + inv3.x * scale},${offsetY + inv3.y * scale} ${offsetX + inv4.x * scale},${offsetY + inv4.y * scale}`,
+        centerX: offsetX + (currentX + s_out / 2) * scale,
+        centerY: offsetY + (baseY + h / 2) * scale
+      })
+      
+      currentX += s_out - reduction + kerf.value
+    }
+    
+    // Trapecio adicional si cabe
+    const remainingWidth = sheetLength.value - currentX
+    if (remainingWidth >= s_out + kerf.value) {
+      const offsetLeft = (s_out - s_in) / 2
+      
+      const e1 = { x: currentX + offsetLeft, y: baseY }
+      const e2 = { x: currentX + offsetLeft + s_in, y: baseY }
+      const e3 = { x: currentX + s_out, y: baseY + h }
+      const e4 = { x: currentX, y: baseY + h }
+      
+      traps.push({
+        points: `${offsetX + e1.x * scale},${offsetY + e1.y * scale} ${offsetX + e2.x * scale},${offsetY + e2.y * scale} ${offsetX + e3.x * scale},${offsetY + e3.y * scale} ${offsetX + e4.x * scale},${offsetY + e4.y * scale}`,
+        centerX: offsetX + (currentX + s_out / 2) * scale,
+        centerY: offsetY + (baseY + h / 2) * scale
+      })
+    }
+  }
+  
+  return traps
+})
+
+// Desglose de corte por material basado en layerCombination
+interface MaterialCuttingBreakdown {
+  material: Material
+  layerCount: number
+  trapezoidsNeeded: number
+  trapezoidsPerSheet: number
+  sheetsRequired: number
+}
+
+// Función para calcular trapecios por hoja para cualquier material
+function calculateTrapezoidsPerSheet(materialLength: number, materialWidth: number): number {
+  const d = dims.value
+  if (!d) return 0
+  
+  const box = trapezoidBoundingBox.value
+  const heightWithKerf = box.height + kerf.value
+  const pairWidth = box.effectiveWidth + kerf.value
+  const pairs = Math.floor(materialLength / pairWidth)
+  
+  let trapsPerRow = pairs * 2
+  const remainingWidth = materialLength - (pairs * pairWidth)
+  const singleWidth = box.width + kerf.value
+  if (remainingWidth >= singleWidth) {
+    trapsPerRow += 1
+  }
+  
+  const rows = Math.floor(materialWidth / heightWithKerf)
+  return trapsPerRow * rows
+}
+
+// Desglose de materiales necesarios para el corte
+const cuttingBreakdown = computed<MaterialCuttingBreakdown[]>(() => {
+  const combo = layerCombination.value
+  if (!combo) return []
+  
+  // Agrupar capas por material único (thickness, length, width)
+  const groups = new Map<string, { material: Material; count: number }>()
+  
+  for (const layer of combo.layers) {
+    const key = `${layer.thickness}-${layer.length}-${layer.width}`
+    const existing = groups.get(key)
+    if (existing) {
+      existing.count++
+    } else {
+      groups.set(key, { material: layer, count: 1 })
+    }
+  }
+  
+  // Calcular desglose para cada grupo
+  const breakdown: MaterialCuttingBreakdown[] = []
+  for (const group of groups.values()) {
+    const trapsPerSheet = calculateTrapezoidsPerSheet(group.material.length, group.material.width)
+    const sheetsNeeded = trapsPerSheet > 0 ? Math.ceil(group.count / trapsPerSheet) : 0
+    
+    breakdown.push({
+      material: group.material,
+      layerCount: group.count,
+      trapezoidsNeeded: group.count,
+      trapezoidsPerSheet: trapsPerSheet,
+      sheetsRequired: sheetsNeeded
+    })
+  }
+  
+  return breakdown
+})
+
 const ID = ref<number>(1200)
 const OD = ref<number>(1500)
 
@@ -243,6 +493,25 @@ function findBestLayerCombination(targetTH: number, layerCount: number): LayerCo
 }
 
 const layerCombination = computed(() => findBestLayerCombination(TH.value, layers.value))
+
+// Sincronizar material de corte con material recomendado
+watch(layerCombination, (combo) => {
+  if (combo && combo.layers.length > 0) {
+    const firstLayer = combo.layers[0]
+    sheetLength.value = firstLayer.length
+    sheetWidth.value = firstLayer.width
+    
+    // Encontrar el índice en materials
+    const idx = materials.value.findIndex(m => 
+      m.thickness === firstLayer.thickness && 
+      m.length === firstLayer.length && 
+      m.width === firstLayer.width
+    )
+    if (idx !== -1) {
+      selectedMaterialForCutting.value = idx
+    }
+  }
+})
 
 // Coeficiente en % (editable) ⇄ factor
 const coeffPct = ref<number>(0.35) // 0.35 %
@@ -463,7 +732,8 @@ watch(layerCombination, (combo) => {
     <v-main>
       <v-tabs v-model="activeTab" grow>
         <v-tab value="0">Diseño</v-tab>
-        <v-tab value="1">Materiales Disponibles</v-tab>
+        <v-tab value="1">Corte</v-tab>
+        <v-tab value="2">TIV - Disponibles</v-tab>
       </v-tabs>
 
       <v-window v-model="activeTab">
@@ -604,12 +874,195 @@ watch(layerCombination, (combo) => {
         </v-container>
         </v-window-item>
 
-        <!-- TAB 1: MATERIALES DISPONIBLES -->
+        <!-- TAB 1: CORTE -->
         <v-window-item value="1">
           <v-container class="py-6">
             <v-card elevation="3">
+              <v-card-title class="text-h6">Optimización de Corte</v-card-title>
+              <v-card-text>
+                <!-- Desglose de materiales por capas -->
+                <v-row v-if="cuttingBreakdown.length > 0" dense class="mb-4">
+                  <v-col cols="12">
+                    <v-alert type="success" variant="tonal" density="compact" class="mb-2">
+                      <strong>Desglose de corte por material</strong> - Basado en la combinación de capas recomendada
+                    </v-alert>
+                    <v-table density="compact">
+                      <thead>
+                        <tr>
+                          <th>Material (mm)</th>
+                          <th class="text-center">Capas</th>
+                          <th class="text-center">Trapecios/Hoja</th>
+                          <th class="text-center">Hojas Requeridas</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr v-for="(item, idx) in cuttingBreakdown" :key="idx">
+                          <td>
+                            <strong>{{ item.material.thickness }}</strong> × {{ item.material.length }} × {{ item.material.width }}
+                          </td>
+                          <td class="text-center">
+                            <v-chip size="small" color="primary">{{ item.layerCount }}</v-chip>
+                          </td>
+                          <td class="text-center">{{ item.trapezoidsPerSheet }}</td>
+                          <td class="text-center">
+                            <v-chip size="small" color="success">{{ item.sheetsRequired }}</v-chip>
+                          </td>
+                        </tr>
+                      </tbody>
+                      <tfoot>
+                        <tr class="font-weight-bold">
+                          <td colspan="3" class="text-right">Total de hojas:</td>
+                          <td class="text-center">
+                            <v-chip color="success">
+                              {{ cuttingBreakdown.reduce((sum, item) => sum + item.sheetsRequired, 0) }}
+                            </v-chip>
+                          </td>
+                        </tr>
+                      </tfoot>
+                    </v-table>
+                  </v-col>
+                </v-row>
+                
+                <v-divider class="my-4"></v-divider>
+                
+                <div class="text-subtitle-2 mb-3">Visualización Detallada (Opcional)</div>
+                
+                <v-row dense>
+                  <v-col cols="12" md="4">
+                    <v-select
+                      v-model="selectedMaterialForCutting"
+                      :items="inStockMaterials"
+                      item-title="label"
+                      item-value="index"
+                      label="Material para visualizar"
+                      hint="Selecciona para ver el patrón de corte en detalle"
+                      persistent-hint
+                      variant="outlined"
+                      density="comfortable"
+                    />
+                    <v-text-field
+                      v-model.number="sheetLength"
+                      type="number"
+                      label="Largo de hoja (mm)"
+                      variant="outlined"
+                      density="comfortable"
+                    />
+                    <v-text-field
+                      v-model.number="sheetWidth"
+                      type="number"
+                      label="Ancho de hoja (mm)"
+                      variant="outlined"
+                      density="comfortable"
+                    />
+                    <v-text-field
+                      v-model.number="kerf"
+                      type="number"
+                      label="Separación de corte (mm)"
+                      hint="Ancho de corte de la herramienta"
+                      persistent-hint
+                      variant="outlined"
+                      density="comfortable"
+                      step="0.1"
+                      min="0"
+                    />
+                    
+                    <v-divider class="my-4"></v-divider>
+                    
+                    <v-alert type="info" variant="tonal" density="compact" class="mb-3">
+                      <div class="text-caption">
+                        <strong>Optimización:</strong> Los trapecios se alternan (normal/invertido) para aprovechar mejor el espacio.
+                      </div>
+                    </v-alert>
+                    
+                    <div class="mb-3">
+                      <div class="text-caption text-medium-emphasis mb-2">Dimensiones del trapecio</div>
+                      <v-chip size="small" class="mr-1 mb-1">SL1: {{ SL1.toFixed(1) }}mm</v-chip>
+                      <v-chip size="small" class="mr-1 mb-1">SL2: {{ SL2.toFixed(1) }}mm</v-chip>
+                      <v-chip size="small" class="mr-1 mb-1">H: {{ W1.toFixed(1) }}mm</v-chip>
+                    </div>
+                    
+                    <v-card variant="tonal" color="success" class="mb-3">
+                      <v-card-text>
+                        <div class="text-h4 font-weight-bold">{{ trapezoidsPerSheet }}</div>
+                        <div class="text-caption">Trapecios por hoja</div>
+                      </v-card-text>
+                    </v-card>
+                    
+                    <v-card variant="tonal" color="warning">
+                      <v-card-text>
+                        <div class="text-h5 font-weight-bold">{{ wastePercentage.toFixed(1) }}%</div>
+                        <div class="text-caption">Desperdicio</div>
+                      </v-card-text>
+                    </v-card>
+                    
+                    <div class="mt-4">
+                      <div class="text-caption text-medium-emphasis mb-2">Leyenda</div>
+                      <div class="d-flex align-center mb-1">
+                        <div style="width:16px;height:16px;background:#8ac29a;border:1px solid #2d6a4f;border-radius:3px;margin-right:8px"></div>
+                        <span class="text-caption">Normal</span>
+                      </div>
+                      <div class="d-flex align-center">
+                        <div style="width:16px;height:16px;background:#fbbf24;border:1px solid #d97706;border-radius:3px;margin-right:8px"></div>
+                        <span class="text-caption">Invertido</span>
+                      </div>
+                    </div>
+                  </v-col>
+                  
+                  <v-col cols="12" md="8">
+                    <div class="cutting-canvas-container">
+                      <svg
+                        :width="canvasWidth"
+                        :height="canvasHeight"
+                        style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px"
+                      >
+                        <!-- Hoja principal -->
+                        <rect
+                          :x="20"
+                          :y="20"
+                          :width="sheetScaledWidth"
+                          :height="sheetScaledHeight"
+                          fill="#ffffff"
+                          stroke="#64748b"
+                          stroke-width="2"
+                        />
+                        
+                        <!-- Trapecios anidados con alternancia visible -->
+                        <g v-for="(trap, idx) in nestingLayout" :key="idx">
+                          <polygon
+                            :points="trap.points"
+                            :fill="idx % 2 === 0 ? '#8ac29a70' : '#fbbf2470'"
+                            :stroke="idx % 2 === 0 ? '#2d6a4f' : '#d97706'"
+                            stroke-width="1.5"
+                            stroke-dasharray="4 2"
+                          />
+                          <text
+                            :x="trap.centerX"
+                            :y="trap.centerY"
+                            text-anchor="middle"
+                            dominant-baseline="middle"
+                            font-size="11"
+                            font-weight="600"
+                            :fill="idx % 2 === 0 ? '#1b4332' : '#92400e'"
+                            v-if="nestingLayout.length <= 100"
+                          >
+                            {{ idx + 1 }}
+                          </text>
+                        </g>
+                      </svg>
+                    </div>
+                  </v-col>
+                </v-row>
+              </v-card-text>
+            </v-card>
+          </v-container>
+        </v-window-item>
+
+        <!-- TAB 2: TIV - DISPONIBLES -->
+        <v-window-item value="2">
+          <v-container class="py-6">
+            <v-card elevation="3">
               <v-card-title class="d-flex justify-space-between align-center">
-                <span>Estándares de Materiales Disponibles</span>
+                <span>TIV - Disponibles</span>
                 <div class="d-flex gap-2">
                   <v-tooltip text="Agregar nuevo material">
                     <template #activator="{ props }">
@@ -813,5 +1266,12 @@ watch(layerCombination, (combo) => {
   font-size: 0.85em;
   margin-left: 4px;
   opacity: 0.7;
+}
+
+.cutting-canvas-container {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 1rem;
 }
 </style>
