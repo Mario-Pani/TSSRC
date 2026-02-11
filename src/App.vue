@@ -6,6 +6,7 @@ import { computeDims, pickNByOD } from './utils/geometry'
 import { availableMaterials, type Material } from './utils/materials'
 import { useNestingCalculations } from './composables/useNestingCalculations'
 import { useCuttingBreakdown, type LayerCombination } from './composables/useCuttingBreakdown'
+import { useInputValidation } from './composables/useInputValidation'
 
 const isDark = ref(true)
 const activeTab = ref(0)
@@ -17,107 +18,44 @@ const ringCount = ref<number>(6)
 const TH = ref<number>(12)
 const layers = ref<number>(3)
 
-// Estado para errores de validación
-const idError = ref<boolean>(false)
-const idErrorMsg = ref<string>('')
-const odError = ref<boolean>(false)
-const odErrorMsg = ref<string>('')
-const radialError = ref<boolean>(false)
-const radialErrorMsg = ref<string>('')
-const thError = ref<boolean>(false)
-const thErrorMsg = ref<string>('')
-const ringCountError = ref<boolean>(false)
-const ringCountErrorMsg = ref<string>('')
-const layersError = ref<boolean>(false)
-const layersErrorMsg = ref<string>('')
+// Usar composable de validación
+const {
+  idError, idErrorMsg,
+  odError, odErrorMsg,
+  radialError, radialErrorMsg,
+  thError, thErrorMsg,
+  ringCountError, ringCountErrorMsg,
+  layersError, layersErrorMsg,
+  validateID: validate_ID,
+  validateOD: validate_OD,
+  validateTH: validate_TH,
+  validateRingCount: validate_RingCount,
+  validateLayers: validate_Layers
+} = useInputValidation()
 
-// Funciones de validación
+// Wrappers para usar con watch
 function validateID() {
-  idError.value = false
-  idErrorMsg.value = ''
-  
-  if (ID.value <= 0) {
-    idError.value = true
-    idErrorMsg.value = 'ID debe ser > 0'
-    ID.value = 100 // Corregir automáticamente
-  }
-  if (ID.value >= OD.value) {
-    idError.value = true
-    idErrorMsg.value = 'ID debe ser menor que OD'
-  }
-  
-  validateRadialGap()
+  validate_ID(ID, OD)
 }
 
 function validateOD() {
-  odError.value = false
-  odErrorMsg.value = ''
-  
-  if (OD.value <= 0) {
-    odError.value = true
-    odErrorMsg.value = 'OD debe ser > 0'
-    OD.value = 2000 // Corregir automáticamente
-  }
-  if (OD.value <= ID.value) {
-    odError.value = true
-    odErrorMsg.value = 'OD debe ser mayor que ID'
-  }
-  
-  validateRadialGap()
+  validate_OD(ID, OD)
 }
 
 function validateRadialGap() {
-  radialError.value = false
-  radialErrorMsg.value = ''
-  
-  const gap = OD.value - ID.value
-  if (gap < 25) {
-    radialError.value = true
-    radialErrorMsg.value = `⚠ Construcción Radial demasiado pequeña ${gap.toFixed(1)}mm < 25mm`
-  }
+  // Ya se llama dentro de validateID y validateOD
 }
 
 function validateTH() {
-  thError.value = false
-  thErrorMsg.value = ''
-  
-  if (TH.value < 5) {
-    thError.value = true
-    thErrorMsg.value = 'TH debe ser >= 5mm'
-    TH.value = 5 // Corregir automáticamente
-  }
+  validate_TH(TH)
 }
 
 function validateRingCount() {
-  ringCountError.value = false
-  ringCountErrorMsg.value = ''
-  
-  if (ringCount.value < 1) {
-    ringCountError.value = true
-    ringCountErrorMsg.value = 'Cantidad debe ser >= 1'
-    ringCount.value = 1 // Corregir automáticamente
-  }
-  if (ringCount.value > 24) {
-    ringCountError.value = true
-    ringCountErrorMsg.value = 'Cantidad debe ser <= 24'
-    ringCount.value = 24 // Corregir automáticamente
-  }
+  validate_RingCount(ringCount)
 }
 
 function validateLayers() {
-  layersError.value = false
-  layersErrorMsg.value = ''
-  
-  if (layers.value < 3) {
-    layersError.value = true
-    layersErrorMsg.value = 'Capas debe ser >= 3'
-    layers.value = 3 // Corregir automáticamente
-  }
-  if (layers.value > 8) {
-    layersError.value = true
-    layersErrorMsg.value = 'Capas debe ser <= 8'
-    layers.value = 8 // Corregir automáticamente
-  }
+  validate_Layers(layers)
 }
 
 // Watchers para validar en tiempo real
