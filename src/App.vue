@@ -356,7 +356,7 @@ const dims = computed(() => {
 // Salidas computadas
 const SL1 = computed(() => dims.value?.s_in ?? 0)
 const SL2 = computed(() => dims.value?.s_out ?? 0)
-const W1 = computed(() => dims.value?.h ?? 0)
+const H1 = computed(() => dims.value?.h ?? 0)
 const A1 = computed(() => dims.value?.alphaDeg ?? 0)
 const N = computed(() => pickNByOD(+OD.value))
 const showGuides = ref(true)
@@ -658,22 +658,25 @@ watch(layerCombination, (combo) => {
 
                 <div class="py-2">
                   <div class="d-flex flex-wrap ga-4">
+                    <v-chip color="info" variant="tonal" class="ma-1">
+                      Lados (N) = {{ N }}
+                    </v-chip>
                     <v-chip color="primary" variant="tonal" class="ma-1">
                       SL1 (corta) = {{ SL1.toFixed(2) }} mm
                     </v-chip>
-                    <v-chip color="primary" variant="tonal" class="ma-1">
+                    <v-chip color="error" variant="tonal" class="ma-1">
                       SL2 (larga) = {{ SL2.toFixed(2) }} mm
                     </v-chip>
-                    <v-chip color="secondary" variant="tonal" class="ma-1">
-                      H1 (altura) = {{ W1.toFixed(2) }} mm
+                    <v-chip color="success" variant="tonal" class="ma-1">
+                      H1 (altura) = {{ H1.toFixed(2) }} mm
                     </v-chip>
-                    <v-chip color="info" variant="tonal" class="ma-1">
+                    <v-chip color="warning" variant="tonal" class="ma-1">
                       corte ∠° = {{ A1.toFixed(3) }}°
                     </v-chip>
                   </div>
 
                   <!-- SVG Diagrama del Trapecio Isósceles - Componente Responsivo -->
-                  <SVGTrapezoid :SL1="SL1" :SL2="SL2" :W1="W1" :A1="A1" />
+                  <SVGTrapezoid :SL1="SL1" :SL2="SL2" :H1="H1" :A1="A1" />
                 </div>
                 <v-divider class="my-5"></v-divider>
                 <!-- SVG del Trapecio -->
@@ -878,7 +881,7 @@ watch(layerCombination, (combo) => {
                       <div class="text-caption text-medium-emphasis mb-2">Dimensiones del trapecio</div>
                       <v-chip size="small" class="mr-1 mb-1">SL1: {{ SL1.toFixed(1) }}mm</v-chip>
                       <v-chip size="small" class="mr-1 mb-1">SL2: {{ SL2.toFixed(1) }}mm</v-chip>
-                      <v-chip size="small" class="mr-1 mb-1">H: {{ W1.toFixed(1) }}mm</v-chip>
+                      <v-chip size="small" class="mr-1 mb-1">H: {{ H1.toFixed(1) }}mm</v-chip>
                     </div>
                     
                     <v-card variant="tonal" color="success" class="mb-3">
