@@ -1,7 +1,7 @@
 <!-- src/components/PreviewCanvas.vue -->
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { polygonVertices, computeDims } from '../utils/geometry'
+import { polygonVertices, computeDimsMemo } from '../utils/geometry'
 
 const props = defineProps<{
   ID: number
@@ -11,7 +11,7 @@ const props = defineProps<{
   showGuides?: boolean
 }>()
 
-const dims = computed(() => computeDims(props.ID, props.OD, props.coeff))
+const dims = computed(() => computeDimsMemo(props.ID, props.OD, props.coeff))
 
 // Nominal para guías (círculos punteados)
 const Ri_nom = computed(() => dims.value.nominal.Ri)

@@ -1,25 +1,52 @@
-<!-- src/App.vue -->
+<!-- src/App.vue
+================================================================================
+APLICACIÓN PRINCIPAL: TSSRC (Trapezoid Segment Ring Cutting Calculator)
+
+Componente raíz que gestiona:
+1. Inputs del usuario (ID, OD, TH, ringCount, layers)
+2. Validación de inputs con auto-corrección
+3. Cálculos geométricos del trapecio
+4. Visualización (SVG + Canvas 2D)
+5. Desglose de materiales y cálculos de nesting
+6. Gestión de materiales en localStorage
+
+Flujo de datos:
+  User Inputs → [Validación] → [Cálculos] → [Visualización]
+
+================================================================================
+-->
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
 import PreviewCanvas from './components/PreviewCanvas.vue'
 import SVGTrapezoid from './components/SVGTrapezoid.vue'
-import { computeDims, pickNByOD } from './utils/geometry'
-import { availableMaterials, type Material } from './utils/materials'
+import { computeDimsMemo, pickNByOD } from './utils/geometry'
+import { getDefaultMaterials, type Material } from './utils/materials'
 import { useNestingCalculations } from './composables/useNestingCalculations'
 import { useCuttingBreakdown, type LayerCombination } from './composables/useCuttingBreakdown'
 import { useInputValidation } from './composables/useInputValidation'
 
+// ============================================
+// THEME Y ESTADO GENERAL
+// ============================================
 const isDark = ref(true)
 const activeTab = ref(0)
 
-// Refs para control de hoja/inputs - DEFINIR PRIMERO
+// ============================================
+// INPUTS DEL USUARIO (DEFINIR PRIMERO)
+// ============================================
+// Estos refs se definen antes que los computed que los usan
+// ORDEN IMPORTA: evita "ReferenceError: X is not defined"
 const ID = ref<number>(1200)
 const OD = ref<number>(1500)
 const ringCount = ref<number>(6)
 const TH = ref<number>(12)
 const layers = ref<number>(3)
 
-// Usar composable de validación
+// ============================================
+// VALIDACIÓN DE INPUTS
+// ============================================
+// Utiliza composable useInputValidation para mantener lógica reutilizable
+// Proporciona: estados de error + funciones de validación con auto-corrección
 const {
   idError, idErrorMsg,
   odError, odErrorMsg,
@@ -34,7 +61,8 @@ const {
   validateLayers: validate_Layers
 } = useInputValidation()
 
-// Wrappers para usar con watch
+// Wrappers para usar con watchers de Vue
+// Estos llaman al composable pasando las Refs como argumentos
 function validateID() {
   validate_ID(ID, OD)
 }
@@ -59,12 +87,28 @@ function validateLayers() {
   validate_Layers(layers)
 }
 
-// Watchers para validar en tiempo real
-watch(ID, () => validateID())
-watch(OD, () => validateOD())
-watch(TH, () => validateTH())
-watch(ringCount, () => validateRingCount())
-watch(layers, () => validateLayers())
+function createDebouncedValidator(fn: () => void, delay = 250) {
+  let timer: number | undefined
+  return () => {
+    if (timer !== undefined) window.clearTimeout(timer)
+    timer = window.setTimeout(() => {
+      fn()
+    }, delay)
+  }
+}
+
+const debouncedValidateID = createDebouncedValidator(validateID)
+const debouncedValidateOD = createDebouncedValidator(validateOD)
+const debouncedValidateTH = createDebouncedValidator(validateTH)
+const debouncedValidateRingCount = createDebouncedValidator(validateRingCount)
+const debouncedValidateLayers = createDebouncedValidator(validateLayers)
+
+// Watchers para validar en tiempo real (con debounce)
+watch(ID, () => debouncedValidateID())
+watch(OD, () => debouncedValidateOD())
+watch(TH, () => debouncedValidateTH())
+watch(ringCount, () => debouncedValidateRingCount())
+watch(layers, () => debouncedValidateLayers())
 
 // Materials management
 const initializeMaterials = (): Material[] => {
@@ -73,10 +117,10 @@ const initializeMaterials = (): Material[] => {
     try {
       return JSON.parse(stored)
     } catch {
-      return availableMaterials.map(m => ({ ...m, inStock: true }))
+      return getDefaultMaterials()
     }
   }
-  return availableMaterials.map(m => ({ ...m, inStock: true }))
+  return getDefaultMaterials()
 }
 
 const materials = ref<Material[]>(initializeMaterials())
@@ -344,7 +388,7 @@ function resetview() {
 const calcError = ref<string | null>(null)
 const dims = computed(() => {
   try {
-    const d = computeDims(+ID.value, +OD.value, +coeff.value)
+    const d = computeDimsMemo(+ID.value, +OD.value, +coeff.value)
     calcError.value = null
     return d
   } catch (e: any) {

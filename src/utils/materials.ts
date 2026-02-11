@@ -80,3 +80,13 @@ export const availableMaterials: Material[] = [
 { thickness: 7, length: 6300, width: 2440 },
 { thickness: 8, length: 3200, width: 2108 },
 ]
+
+let defaultMaterialsCache: Material[] | null = null
+
+export function getDefaultMaterials(): Material[] {
+  if (!defaultMaterialsCache) {
+    defaultMaterialsCache = availableMaterials.map((m) => ({ ...m, inStock: true }))
+  }
+
+  return defaultMaterialsCache.map((m) => ({ ...m }))
+}

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { polygonVertices, computeDims } from '../utils/geometry'
+import { polygonVertices, computeDimsMemo } from '../utils/geometry'
 
 const props = defineProps<{
   ID: number; OD: number; coeff: number;
@@ -24,10 +24,10 @@ const emit = defineEmits<{
 }>()
 
 
-const lastDims = ref(computeDims(props.ID, props.OD, props.coeff))
+const lastDims = ref(computeDimsMemo(props.ID, props.OD, props.coeff))
 const dims  = computed(() => {
   try {
-    const next = computeDims(props.ID, props.OD, props.coeff)
+    const next = computeDimsMemo(props.ID, props.OD, props.coeff)
     lastDims.value = next
     return next
   } catch {
