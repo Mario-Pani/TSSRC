@@ -2,6 +2,7 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
 import PreviewCanvas from './components/PreviewCanvas.vue'
+import SVGTrapezoid from './components/SVGTrapezoid.vue'
 import { computeDims, pickNByOD } from './utils/geometry'
 import { availableMaterials, type Material } from './utils/materials'
 import { useNestingCalculations } from './composables/useNestingCalculations'
@@ -671,49 +672,8 @@ watch(layerCombination, (combo) => {
                     </v-chip>
                   </div>
 
-                  <!-- SVG Diagrama del Trapecio Isósceles -->
-                  <div style="margin-top: 24px; display: flex; justify-content: left;">
-                    <svg viewBox="0 0 400 220" width="500" height="220" style="border: 1px solid #ddd; border-radius: 8px; background: #ffffff26;">
-                      <!-- Trapecio Isósceles: base corta (SL1) arriba, base larga (SL2) abajo -->
-                      <polygon 
-                        :points="`110,60 290,60 330,150 70,150`" 
-                        fill="#d9e18e" 
-                        stroke="#ffffff" 
-                        stroke-width="2.5" 
-                        stroke-linejoin="round"
-                      />
-                      
-                      <!-- Dimensión SL1 (base corta - arriba) -->
-                      <line x1="110" y1="40" x2="290" y2="40" stroke="#0288d1" stroke-width="2.5"/>
-                      <line x1="110" y1="35" x2="110" y2="45" stroke="#0288d1" stroke-width="2"/>
-                      <line x1="290" y1="35" x2="290" y2="45" stroke="#0288d1" stroke-width="2"/>
-                      <text x="200" y="28" font-size="13" font-weight="bold" fill="#0288d1" style="text-anchor: middle;">SL1: {{ SL1.toFixed(1) }}mm</text>
-
-                      <!-- Dimensión SL2 (base larga - abajo) -->
-                      <line x1="70" y1="170" x2="330" y2="170" stroke="#c96562" stroke-width="2.5"/>
-                      <line x1="70" y1="165" x2="70" y2="175" stroke="#c96562" stroke-width="2"/>
-                      <line x1="330" y1="165" x2="330" y2="175" stroke="#c96562" stroke-width="2"/>
-                      <text x="200" y="195" font-size="13" font-weight="bold" fill="#c96562" style="text-anchor: middle;">SL2: {{ SL2.toFixed(1) }}mm</text>
-
-                      <!-- Dimensión H1 (altura - lado izquierdo) -->
-                      <line x1="50" y1="60" x2="50" y2="150" stroke="#38c48c" stroke-width="2.5"/>
-                      <line x1="45" y1="60" x2="55" y2="60" stroke="#38c48c" stroke-width="2"/>
-                      <line x1="45" y1="150" x2="55" y2="150" stroke="#38c48c" stroke-width="2"/>
-                      <text x="35" y="108" font-size="13" font-weight="bold" fill="#388e3c" style="text-anchor: end; dominant-baseline: middle;">H1: {{ W1.toFixed(1) }}mm</text>
-
-                      <!-- Dimensión A1 (ángulo de corte - esquina inferior derecha) -->
-                      <g>
-                        <!-- Línea de referencia vertical (lado derecho) -->
-                        <line x1="330" y1="150" x2="310" y2="107" stroke="#ff6f00" stroke-width="2" stroke-dasharray="4,2"/>
-                        <!-- Línea del lado oblicuo del trapecio -->
-                        <line x1="330" y1="150" x2="290" y2="150" stroke="#ff6f00" stroke-width="2" stroke-dasharray="4,2"/>
-                        <!-- Arco para el ángulo -->
-                        <path d="M 320,130 A 25,25 0 0,0 310,150" fill="none" stroke="#ff6f00" stroke-width="1.5"/>
-                        <!-- Texto del ángulo -->
-                        <text x="290" y="140" font-size="12" font-weight="bold" fill="#ff6f00" style="text-anchor: middle;">∠° {{ A1.toFixed(1) }}°</text>
-                      </g>
-                    </svg>
-                  </div>
+                  <!-- SVG Diagrama del Trapecio Isósceles - Componente Responsivo -->
+                  <SVGTrapezoid :SL1="SL1" :SL2="SL2" :W1="W1" :A1="A1" />
                 </div>
                 <v-divider class="my-5"></v-divider>
                 <!-- SVG del Trapecio -->
