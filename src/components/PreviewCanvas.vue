@@ -16,6 +16,7 @@ const emit = defineEmits<{
   (e: 'update:scale', v: number): void
   (e:'update:pan-x', v:number): void
   (e:'update:pan-y', v:number): void
+  (e:'update:show-guides', v:boolean): void
   (e: 'update:layers', v: number): void
   (e: 'update:layers-enabled', v: boolean[]): void
   (e: 'update:layers-thicknesses', v: number[]): void
@@ -105,6 +106,14 @@ const localLayerColors = ref<Array<{ fill: string; stroke: string }>>(
     stroke: extractHex(colors[i % 2].stroke)
   }))
 )
+
+const localShowGuides = ref<boolean>(props.showGuides ?? true)
+const localGuideInner = ref<string>('#dd7ed6')
+const localGuideOuter = ref<string>('#bd35d5')
+
+watch(() => props.showGuides, (v) => {
+  if (typeof v === 'boolean') localShowGuides.value = v
+})
 
 watch(() => localLayers.value, (newCount) => {
   // Ajustar el arreglo de colores al cambiar cantidad de capas
@@ -275,6 +284,14 @@ function endDrag(e: PointerEvent) {
   try { svgEl.value.releasePointerCapture(e.pointerId) } catch {}
   svgEl.value.style.cursor = 'grab'
 }
+
+function onZoomInput(e: Event) {
+  const raw = (e.target as HTMLInputElement).value
+  const next = Number(raw)
+  if (!Number.isFinite(next)) return
+  const clamped = clamp(next, 0.05, 0.8)
+  emit('update:scale', clamped)
+}
 </script>
 
 <template>
@@ -315,10 +332,10 @@ function endDrag(e: PointerEvent) {
       </template>
 
       <!-- Guías: círculos punteados (nominal) -->
-            <circle v-if="showGuides" :cx="cx" :cy="cy" :r="(Ri_nom*scale)"
-              fill="none" stroke="#dd7ed6" stroke-width="1.5" stroke-dasharray="3 2"/>
-            <circle v-if="showGuides" :cx="cx" :cy="cy" :r="(Ro_nom*scale)"
-              fill="none" stroke="#bd35d5" stroke-width="1.5" stroke-dasharray="3 2"/>
+            <circle v-if="localShowGuides" :cx="cx" :cy="cy" :r="(Ri_nom*scale)"
+              fill="none" :stroke="localGuideInner" stroke-width="1.5" stroke-dasharray="3 2"/>
+            <circle v-if="localShowGuides" :cx="cx" :cy="cy" :r="(Ro_nom*scale)"
+              fill="none" :stroke="localGuideOuter" stroke-width="1.5" stroke-dasharray="3 2"/>
 
     </svg>
 
@@ -327,6 +344,14 @@ function endDrag(e: PointerEvent) {
       <div class="controls-header">
         <div class="controls-title">Capas</div>
         <input class="num-input" type="number" v-model.number="localLayers" min="3" max="8" />
+      </div>
+
+      <div class="controls-row guides-row">
+        <label class="switch"><input type="checkbox" v-model="localShowGuides" @change="emit('update:show-guides', localShowGuides)" /><span>ID / OD</span></label>
+        <div class="guides-colors">
+          <input class="color-input" type="color" v-model="localGuideInner" title="Color ID" />
+          <input class="color-input" type="color" v-model="localGuideOuter" title="Color OD" />
+        </div>
       </div>
 
       <div class="controls-row">
@@ -376,6 +401,22 @@ function endDrag(e: PointerEvent) {
         </div>
       </div>
 
+      <div class="zoom-section">
+        <div class="zoom-header">
+          <span>Zoom</span>
+          <span class="zoom-value">{{ scale.toFixed(3) }}</span>
+        </div>
+        <input
+          class="zoom-slider"
+          type="range"
+          min="0.05"
+          max="0.8"
+          step="0.001"
+          :value="scale"
+          @input="onZoomInput"
+        />
+      </div>
+
     </div>
   </div>
 </template>
@@ -401,4 +442,13 @@ function endDrag(e: PointerEvent) {
 .layer-toggle:hover{ background:#f3f4f6 }
 .layer-toggle.active{ background:#6493f96b; border-color:#ffffffbc }
 .layer-toggle.active .layer-icon{ color:#ffffff }
+.guides-row{ align-items:center }
+.guides-colors{ display:flex; gap:6px; align-items:center }
+.zoom-section{
+  margin-top:10px; padding-top:10px; border-top:1px solid #f1f5f9;
+  font-size:12px; color:#111827;
+}
+.zoom-header{ display:flex; align-items:center; justify-content:space-between; margin-bottom:6px }
+.zoom-value{ font-variant-numeric: tabular-nums; color:#374151 }
+.zoom-slider{ width:100%; accent-color:#3b82f6 }
 </style>

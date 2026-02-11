@@ -4,9 +4,128 @@ import { ref, computed, watch } from 'vue'
 import PreviewCanvas from './components/PreviewCanvas.vue'
 import { computeDims, pickNByOD } from './utils/geometry'
 import { availableMaterials, type Material } from './utils/materials'
+import { useNestingCalculations } from './composables/useNestingCalculations'
+import { useCuttingBreakdown, type LayerCombination } from './composables/useCuttingBreakdown'
 
 const isDark = ref(true)
 const activeTab = ref(0)
+
+// Refs para control de hoja/inputs - DEFINIR PRIMERO
+const ID = ref<number>(1200)
+const OD = ref<number>(1500)
+const ringCount = ref<number>(6)
+const TH = ref<number>(12)
+const layers = ref<number>(3)
+
+// Estado para errores de validación
+const idError = ref<boolean>(false)
+const idErrorMsg = ref<string>('')
+const odError = ref<boolean>(false)
+const odErrorMsg = ref<string>('')
+const radialError = ref<boolean>(false)
+const radialErrorMsg = ref<string>('')
+const thError = ref<boolean>(false)
+const thErrorMsg = ref<string>('')
+const ringCountError = ref<boolean>(false)
+const ringCountErrorMsg = ref<string>('')
+const layersError = ref<boolean>(false)
+const layersErrorMsg = ref<string>('')
+
+// Funciones de validación
+function validateID() {
+  idError.value = false
+  idErrorMsg.value = ''
+  
+  if (ID.value <= 0) {
+    idError.value = true
+    idErrorMsg.value = 'ID debe ser > 0'
+    ID.value = 100 // Corregir automáticamente
+  }
+  if (ID.value >= OD.value) {
+    idError.value = true
+    idErrorMsg.value = 'ID debe ser menor que OD'
+  }
+  
+  validateRadialGap()
+}
+
+function validateOD() {
+  odError.value = false
+  odErrorMsg.value = ''
+  
+  if (OD.value <= 0) {
+    odError.value = true
+    odErrorMsg.value = 'OD debe ser > 0'
+    OD.value = 2000 // Corregir automáticamente
+  }
+  if (OD.value <= ID.value) {
+    odError.value = true
+    odErrorMsg.value = 'OD debe ser mayor que ID'
+  }
+  
+  validateRadialGap()
+}
+
+function validateRadialGap() {
+  radialError.value = false
+  radialErrorMsg.value = ''
+  
+  const gap = OD.value - ID.value
+  if (gap < 25) {
+    radialError.value = true
+    radialErrorMsg.value = `⚠ Construcción Radial demasiado pequeña ${gap.toFixed(1)}mm < 25mm`
+  }
+}
+
+function validateTH() {
+  thError.value = false
+  thErrorMsg.value = ''
+  
+  if (TH.value < 5) {
+    thError.value = true
+    thErrorMsg.value = 'TH debe ser >= 5mm'
+    TH.value = 5 // Corregir automáticamente
+  }
+}
+
+function validateRingCount() {
+  ringCountError.value = false
+  ringCountErrorMsg.value = ''
+  
+  if (ringCount.value < 1) {
+    ringCountError.value = true
+    ringCountErrorMsg.value = 'Cantidad debe ser >= 1'
+    ringCount.value = 1 // Corregir automáticamente
+  }
+  if (ringCount.value > 24) {
+    ringCountError.value = true
+    ringCountErrorMsg.value = 'Cantidad debe ser <= 24'
+    ringCount.value = 24 // Corregir automáticamente
+  }
+}
+
+function validateLayers() {
+  layersError.value = false
+  layersErrorMsg.value = ''
+  
+  if (layers.value < 3) {
+    layersError.value = true
+    layersErrorMsg.value = 'Capas debe ser >= 3'
+    layers.value = 3 // Corregir automáticamente
+  }
+  if (layers.value > 8) {
+    layersError.value = true
+    layersErrorMsg.value = 'Capas debe ser <= 8'
+    layers.value = 8 // Corregir automáticamente
+  }
+}
+
+// Watchers para validar en tiempo real
+watch(ID, () => validateID())
+watch(OD, () => validateOD())
+watch(TH, () => validateTH())
+watch(ringCount, () => validateRingCount())
+watch(layers, () => validateLayers())
 
 // Materials management
 const initializeMaterials = (): Material[] => {
@@ -126,298 +245,12 @@ const sheetWidth = ref(2108)
 const kerf = ref(3) // Separación de corte en mm
 const canvasWidth = 700
 const canvasHeight = 500
+const recommendedCanvasWidth = 360
+const recommendedCanvasHeight = 260
 
-// Materiales en stock para selector
-const inStockMaterials = computed(() => {
-  return materials.value
-    .map((m, index) => ({
-      index,
-      label: `${m.thickness}mm × ${m.length}mm × ${m.width}mm`,
-      ...m
-    }))
-    .filter(m => m.inStock !== false)
-})
-
-// Actualizar dimensiones de hoja cuando se selecciona un material
-watch(selectedMaterialForCutting, (idx) => {
-  if (idx !== null && materials.value[idx]) {
-    const mat = materials.value[idx]
-    sheetLength.value = mat.length
-    sheetWidth.value = mat.width
-  }
-})
-
-// Cálculos de optimización de corte con alternancia horizontal
-const trapezoidBoundingBox = computed(() => {
-  const d = dims.value
-  if (!d) return { width: 0, height: 0, effectiveWidth: 0 }
-  
-  const width = d.s_out
-  const height = d.h
-  
-  // Cuando dos trapecios se alternan horizontalmente (normal + invertido al lado),
-  // el ancho efectivo del par se reduce porque encajan las caras inclinadas
-  const reduction = (d.s_out - d.s_in) / 2
-  const effectiveWidth = 2 * width - reduction
-  
-  return { width, height, effectiveWidth }
-})
-
-const trapezoidsPerSheet = computed(() => {
-  const box = trapezoidBoundingBox.value
-  if (box.width === 0 || box.height === 0) return 0
-  
-  const d = dims.value
-  if (!d) return 0
-  
-  const heightWithKerf = box.height + kerf.value
-  
-  // Pares de trapecios alternados horizontalmente
-  const pairWidth = box.effectiveWidth + kerf.value
-  const pairs = Math.floor(sheetLength.value / pairWidth)
-  
-  // Trapecios por par (2)
-  let trapsPerRow = pairs * 2
-  
-  // Verificar si cabe un trapecio adicional individual
-  const remainingWidth = sheetLength.value - (pairs * pairWidth)
-  const singleWidth = box.width + kerf.value
-  if (remainingWidth >= singleWidth) {
-    trapsPerRow += 1
-  }
-  
-  // Filas
-  const rows = Math.floor(sheetWidth.value / heightWithKerf)
-  
-  return trapsPerRow * rows
-})
-
-const wastePercentage = computed(() => {
-  const d = dims.value
-  if (!d) return 0
-  
-  const totalSheetArea = sheetLength.value * sheetWidth.value
-  
-  // Área aproximada de un trapecio
-  const trapArea = ((d.s_in + d.s_out) / 2) * d.h
-  const usedArea = trapezoidsPerSheet.value * trapArea
-  
-  return ((totalSheetArea - usedArea) / totalSheetArea) * 100
-})
-
-// Escala para dibujar la hoja en el canvas
-const cuttingScale = computed(() => {
-  const maxW = canvasWidth - 40
-  const maxH = canvasHeight - 40
-  const scaleW = maxW / sheetLength.value
-  const scaleH = maxH / sheetWidth.value
-  return Math.min(scaleW, scaleH)
-})
-
-const sheetScaledWidth = computed(() => {
-  return sheetLength.value * cuttingScale.value
-})
-
-const sheetScaledHeight = computed(() => {
-  return sheetWidth.value * cuttingScale.value
-})
-
-// Layout de nesting - generar posiciones de trapecios alternados horizontalmente
-const nestingLayout = computed<Array<{ points: string; centerX: number; centerY: number }>>(() => {
-  const d = dims.value
-  if (!d) return []
-  
-  const traps: Array<{ points: string; centerX: number; centerY: number }> = []
-  const scale = cuttingScale.value
-  const offsetX = 20
-  const offsetY = 20
-  
-  const s_in = d.s_in
-  const s_out = d.s_out
-  const h = d.h
-  
-  const heightWithKerf = h + kerf.value
-  const rows = Math.floor(sheetWidth.value / heightWithKerf)
-  
-  const box = trapezoidBoundingBox.value
-  const pairWidth = box.effectiveWidth + kerf.value
-  const pairs = Math.floor(sheetLength.value / pairWidth)
-  
-  const reduction = (s_out - s_in) / 2
-  
-  for (let row = 0; row < rows; row++) {
-    const baseY = row * heightWithKerf
-    let currentX = 0
-    
-    // Pares alternados en la misma fila
-    for (let pair = 0; pair < pairs; pair++) {
-      // Trapecio NORMAL (base ancha abajo)
-      const offsetLeft = (s_out - s_in) / 2
-      
-      const n1 = { x: currentX + offsetLeft, y: baseY }
-      const n2 = { x: currentX + offsetLeft + s_in, y: baseY }
-      const n3 = { x: currentX + s_out, y: baseY + h }
-      const n4 = { x: currentX, y: baseY + h }
-      
-      traps.push({
-        points: `${offsetX + n1.x * scale},${offsetY + n1.y * scale} ${offsetX + n2.x * scale},${offsetY + n2.y * scale} ${offsetX + n3.x * scale},${offsetY + n3.y * scale} ${offsetX + n4.x * scale},${offsetY + n4.y * scale}`,
-        centerX: offsetX + (currentX + s_out / 2) * scale,
-        centerY: offsetY + (baseY + h / 2) * scale
-      })
-      
-      currentX += s_out - reduction + kerf.value
-      
-      // Trapecio INVERTIDO (base ancha arriba) al lado
-      const inv1 = { x: currentX, y: baseY }
-      const inv2 = { x: currentX + s_out, y: baseY }
-      const inv3 = { x: currentX + offsetLeft + s_in, y: baseY + h }
-      const inv4 = { x: currentX + offsetLeft, y: baseY + h }
-      
-      traps.push({
-        points: `${offsetX + inv1.x * scale},${offsetY + inv1.y * scale} ${offsetX + inv2.x * scale},${offsetY + inv2.y * scale} ${offsetX + inv3.x * scale},${offsetY + inv3.y * scale} ${offsetX + inv4.x * scale},${offsetY + inv4.y * scale}`,
-        centerX: offsetX + (currentX + s_out / 2) * scale,
-        centerY: offsetY + (baseY + h / 2) * scale
-      })
-      
-      currentX += s_out - reduction + kerf.value
-    }
-    
-    // Trapecio adicional si cabe
-    const remainingWidth = sheetLength.value - currentX
-    if (remainingWidth >= s_out + kerf.value) {
-      const offsetLeft = (s_out - s_in) / 2
-      
-      const e1 = { x: currentX + offsetLeft, y: baseY }
-      const e2 = { x: currentX + offsetLeft + s_in, y: baseY }
-      const e3 = { x: currentX + s_out, y: baseY + h }
-      const e4 = { x: currentX, y: baseY + h }
-      
-      traps.push({
-        points: `${offsetX + e1.x * scale},${offsetY + e1.y * scale} ${offsetX + e2.x * scale},${offsetY + e2.y * scale} ${offsetX + e3.x * scale},${offsetY + e3.y * scale} ${offsetX + e4.x * scale},${offsetY + e4.y * scale}`,
-        centerX: offsetX + (currentX + s_out / 2) * scale,
-        centerY: offsetY + (baseY + h / 2) * scale
-      })
-    }
-  }
-  
-  return traps
-})
-
-// Desglose de corte por material basado en layerCombination
-interface MaterialCuttingBreakdown {
-  material: Material
-  layerCount: number
-  trapezoidsNeeded: number
-  trapezoidsPerSheet: number
-  sheetsRequired: number
-}
-
-// Función para calcular trapecios por hoja para cualquier material
-function calculateTrapezoidsPerSheet(materialLength: number, materialWidth: number): number {
-  const d = dims.value
-  if (!d) return 0
-  
-  const box = trapezoidBoundingBox.value
-  const heightWithKerf = box.height + kerf.value
-  const pairWidth = box.effectiveWidth + kerf.value
-  const pairs = Math.floor(materialLength / pairWidth)
-  
-  let trapsPerRow = pairs * 2
-  const remainingWidth = materialLength - (pairs * pairWidth)
-  const singleWidth = box.width + kerf.value
-  if (remainingWidth >= singleWidth) {
-    trapsPerRow += 1
-  }
-  
-  const rows = Math.floor(materialWidth / heightWithKerf)
-  return trapsPerRow * rows
-}
-
-// Desglose de materiales necesarios para el corte
-const cuttingBreakdown = computed<MaterialCuttingBreakdown[]>(() => {
-  const combo = layerCombination.value
-  if (!combo) return []
-  
-  // Agrupar capas por material único (thickness, length, width)
-  const groups = new Map<string, { material: Material; count: number }>()
-  
-  for (const layer of combo.layers) {
-    const key = `${layer.thickness}-${layer.length}-${layer.width}`
-    const existing = groups.get(key)
-    if (existing) {
-      existing.count++
-    } else {
-      groups.set(key, { material: layer, count: 1 })
-    }
-  }
-  
-  // Calcular desglose para cada grupo
-  const breakdown: MaterialCuttingBreakdown[] = []
-  for (const group of groups.values()) {
-    const trapsPerSheet = calculateTrapezoidsPerSheet(group.material.length, group.material.width)
-    const sheetsNeeded = trapsPerSheet > 0 ? Math.ceil(group.count / trapsPerSheet) : 0
-    
-    breakdown.push({
-      material: group.material,
-      layerCount: group.count,
-      trapezoidsNeeded: group.count,
-      trapezoidsPerSheet: trapsPerSheet,
-      sheetsRequired: sheetsNeeded
-    })
-  }
-  
-  return breakdown
-})
-
-const ID = ref<number>(1200)
-const OD = ref<number>(1500)
-
-// Thickness (espesor total en mm)
-const TH = ref<number>(12)
-
-// Capas (sincronizado con PreviewCanvas)
-const layers = ref<number>(3)
-const layerThicknesses = ref<number[]>(Array.from({ length: layers.value }, () => TH.value / layers.value))
-const skipThicknessSync = ref(false)
-const syncingRecommendation = ref(false)
-const suppressRecommendation = ref(false)
-
-// Validador para TH
-const THRules = [
-  (v: number) => v >= 5 || 'El valor debe ser >= 5'
-]
-
-// Método para validar y corregir TH
-function validateTH() {
-  if (TH.value < 5) {
-    TH.value = 5
-  }
-}
-
-// Materiales disponibles (TH en mm, L y W en mm)
-
-// Encontrar la mejor combinación de capas
-interface LayerCombination {
-  layers: Material[]
-  totalThickness: number
-  layerCount: number
-}
-
-function uniqueMaterialsByThickness(materials: Material[]) {
-  const byThickness = new Map<number, Material>()
-  for (const mat of materials) {
-    if (!byThickness.has(mat.thickness)) {
-      byThickness.set(mat.thickness, mat)
-    }
-  }
-  return Array.from(byThickness.values())
-}
-
-function pickClosestMaterials(materials: Material[], target: number, maxCount: number) {
-  return [...materials]
-    .sort((a, b) => Math.abs(a.thickness - target) - Math.abs(b.thickness - target))
-    .slice(0, maxCount)
-}
+// Coeficiente en % (editable) ⇄ factor
+const coeffPct = ref<number>(0.35)
+const coeff = computed(() => 1 + ((+coeffPct.value || 0) / 100))
 
 function recommendLayerCount(targetTH: number, minLayers = 3, maxLayers = 8) {
   let bestCount = minLayers
@@ -434,6 +267,22 @@ function recommendLayerCount(targetTH: number, minLayers = 3, maxLayers = 8) {
   }
 
   return bestCount
+}
+
+function uniqueMaterialsByThickness(materials: Material[]) {
+  const byThickness = new Map<number, Material>()
+  for (const mat of materials) {
+    if (!byThickness.has(mat.thickness)) {
+      byThickness.set(mat.thickness, mat)
+    }
+  }
+  return Array.from(byThickness.values())
+}
+
+function pickClosestMaterials(materials: Material[], target: number, maxCount: number) {
+  return [...materials]
+    .sort((a, b) => Math.abs(a.thickness - target) - Math.abs(b.thickness - target))
+    .slice(0, maxCount)
 }
 
 function findBestLayerCombination(targetTH: number, layerCount: number): LayerCombination | null {
@@ -492,6 +341,7 @@ function findBestLayerCombination(targetTH: number, layerCount: number): LayerCo
   return bestCombination
 }
 
+// Definir layerCombination DESPUÉS de definir findBestLayerCombination
 const layerCombination = computed(() => findBestLayerCombination(TH.value, layers.value))
 
 // Sincronizar material de corte con material recomendado
@@ -513,20 +363,44 @@ watch(layerCombination, (combo) => {
   }
 })
 
-// Coeficiente en % (editable) ⇄ factor
-const coeffPct = ref<number>(0.35) // 0.35 %
-const coeff = computed(() => 1 + ((+coeffPct.value || 0) / 100))
+// Materiales en stock para selector
+const inStockMaterials = computed(() => {
+  return materials.value
+    .map((m, index) => ({
+      index,
+      label: `${m.thickness}mm × ${m.length}mm × ${m.width}mm`,
+      ...m
+    }))
+    .filter(m => m.inStock !== false)
+})
+
+// Actualizar dimensiones de hoja cuando se selecciona un material
+watch(selectedMaterialForCutting, (idx) => {
+  if (idx !== null && materials.value[idx]) {
+    const mat = materials.value[idx]
+    sheetLength.value = mat.length
+    sheetWidth.value = mat.width
+  }
+})
+
+// Refs para control de la hoja de corte
+const layerThicknesses = ref<number[]>(Array.from({ length: layers.value }, () => TH.value / layers.value))
+const skipThicknessSync = ref(false)
+const syncingRecommendation = ref(false)
+const suppressRecommendation = ref(false)
 
 // Zoom y Panel
 const scale = ref(0.22)
-const wheelStep = 0.02 // valor fijo
-const panX =ref(0)
-const panY =ref(0)
+const wheelStep = 0.02
+const panX = ref(0)
+const panY = ref(0)
+
 function resetview() {
   scale.value = 0.22
-  panX.value=0
-  panY.value=0
-} 
+  panX.value = 0
+  panY.value = 0
+}
+
 // Cálculo con manejo de errores
 const calcError = ref<string | null>(null)
 const dims = computed(() => {
@@ -540,13 +414,56 @@ const dims = computed(() => {
   }
 })
 
-// Salidas
-const SL1 = computed(() => dims.value?.s_in  ?? 0)
+// Salidas computadas
+const SL1 = computed(() => dims.value?.s_in ?? 0)
 const SL2 = computed(() => dims.value?.s_out ?? 0)
-const W1  = computed(() => dims.value?.h     ?? 0)
-const A1  = computed(() => dims.value?.alphaDeg ?? 0)
-const N   = computed(() => pickNByOD(+OD.value))
+const W1 = computed(() => dims.value?.h ?? 0)
+const A1 = computed(() => dims.value?.alphaDeg ?? 0)
+const N = computed(() => pickNByOD(+OD.value))
 const showGuides = ref(true)
+
+// Usar composables de cálculos
+const {
+  trapezoidBoundingBox,
+  trapezoidsPerSheet,
+  wastePercentage,
+  calculateTrapezoidsPerSheet,
+  computeWastePercentageFor,
+  computeCuttingScaleFor,
+  buildNestingLayout
+} = useNestingCalculations(dims, sheetLength, sheetWidth, kerf)
+
+// Usar composable para breakdown de materiales (después de useNestingCalculations)
+const { cuttingBreakdown, recommendedCuttingLayouts } = useCuttingBreakdown(
+  dims,
+  layerCombination,
+  N,
+  ringCount,
+  calculateTrapezoidsPerSheet,
+  computeWastePercentageFor,
+  computeCuttingScaleFor,
+  buildNestingLayout,
+  recommendedCanvasWidth,
+  recommendedCanvasHeight
+)
+
+// Escala para dibujar la hoja en el canvas
+const cuttingScale = computed(() => {
+  return computeCuttingScaleFor(sheetLength.value, sheetWidth.value, canvasWidth, canvasHeight)
+})
+
+const sheetScaledWidth = computed(() => {
+  return sheetLength.value * cuttingScale.value
+})
+
+const sheetScaledHeight = computed(() => {
+  return sheetWidth.value * cuttingScale.value
+})
+
+// Layout de nesting - generar posiciones de trapecios alternados horizontalmente
+const nestingLayout = computed(() => {
+  return buildNestingLayout(sheetLength.value, sheetWidth.value, cuttingScale.value)
+})
 
 // Espesor por capa
 const thicknessPerLayer = computed(() => {
@@ -742,83 +659,126 @@ watch(layerCombination, (combo) => {
           <v-container class="py-6">
         <v-row dense>
           <!-- ENTRADAS -->  
-            <v-col cols="12" md="5">
+            <v-col cols="12" md="12">
             <v-card elevation="3">
               <v-card-title class="text-h6">Entradas</v-card-title>
-              <v-tooltip :text="showGuides ? 'Ocultar líneas ID/OD' : 'Mostrar líneas ID/OD'">
-                <template #activator="{ props }">
-                  <v-btn
-                    v-bind="props"
-                    size="small"
-                    variant="tonal"
-                    :color="showGuides ? 'success' : 'secondary'"
-                    @click="showGuides = !showGuides"
-                  >
-                    <v-icon start>{{ showGuides ? 'mdi-eye' : 'mdi-eye-off' }}</v-icon>
-                    Líneas ID/OD
-                  </v-btn>
-                </template>
-              </v-tooltip>
               <v-card-text>
-                <div class="d-grid ga-4">
-                  <!-- ID -->
-                  <v-text-field
-                    v-model.number="ID"
-                    type="number" min="1" step="1"
-                    label="ID (mm)" variant="outlined" density="comfortable"
-                  />
+                <v-row class="ga-4">
+                  <v-col cols="12" sm="6" md="4" lg="2">
+                    <v-text-field
+                      v-model.number="ID"
+                      type="number" min="1" step="1"
+                      label="ID (mm)" variant="outlined" density="comfortable"
+                      :error="idError"
+                      :error-messages="idErrorMsg"
+                      @blur="validateID"
+                    />
+                  </v-col>
+                  <v-col cols="12" sm="6" md="4" lg="2">
+                    <v-text-field
+                      v-model.number="OD"
+                      type="number" min="1" step="1"
+                      label="OD (mm)" variant="outlined" density="comfortable"
+                      :error="odError"
+                      :error-messages="odErrorMsg"
+                      @blur="validateOD"
+                    />
+                  </v-col>
+                  <v-col cols="12" sm="6" md="4" lg="2">
+                    <v-text-field
+                      v-model.number="coeffPct"
+                      type="number" step="0.01"
+                      label="Coeficiente ±(%)" suffix="%"
+                      variant="outlined" density="comfortable"
+                    />
+                  </v-col>
+                  <v-col cols="12" sm="6" md="4" lg="2">
+                    <v-text-field
+                      v-model.number.lazy="TH"
+                      type="number" step="0.1" min="5"
+                      label="TH (mm)" suffix="mm"
+                      variant="outlined" density="comfortable"
+                      :error="thError"
+                      :error-messages="thErrorMsg"
+                      @blur="validateTH"
+                    />
+                  </v-col>
+                  <v-col cols="12" sm="6" md="4" lg="2">
+                    <v-text-field
+                      v-model.number="ringCount"
+                      type="number" min="1" step="1"
+                      label="Cantidad Anillos"
+                      variant="outlined" density="comfortable"
+                      :error="ringCountError"
+                      :error-messages="ringCountErrorMsg"
+                      @blur="validateRingCount"
+                    />
+                  </v-col>
+                </v-row>
+                <v-divider class="my-4"></v-divider>
 
-                  <!-- OD -->
-                  <v-text-field
-                    v-model.number="OD"
-                    type="number" min="1" step="1"
-                    label="OD (mm)" variant="outlined" density="comfortable"
-                  />
+                <div class="py-2">
+                  <div class="d-flex flex-wrap ga-4">
+                    <v-chip color="primary" variant="tonal" class="ma-1">
+                      SL1 (corta) = {{ SL1.toFixed(2) }} mm
+                    </v-chip>
+                    <v-chip color="primary" variant="tonal" class="ma-1">
+                      SL2 (larga) = {{ SL2.toFixed(2) }} mm
+                    </v-chip>
+                    <v-chip color="secondary" variant="tonal" class="ma-1">
+                      H1 (altura) = {{ W1.toFixed(2) }} mm
+                    </v-chip>
+                    <v-chip color="info" variant="tonal" class="ma-1">
+                      corte ∠° = {{ A1.toFixed(3) }}°
+                    </v-chip>
+                  </div>
 
-                  <!-- Coeficiente (%) -->
-                  <v-row class="ga-2">
-                    <v-col cols="12" md="6">
-                      <v-text-field
-                        v-model.number="coeffPct"
-                        type="number" step="0.01"
-                        label="Coeficiente ±(%)" suffix="%"
-                        variant="outlined" density="comfortable"
+                  <!-- SVG Diagrama del Trapecio Isósceles -->
+                  <div style="margin-top: 24px; display: flex; justify-content: left;">
+                    <svg viewBox="0 0 400 220" width="500" height="220" style="border: 1px solid #ddd; border-radius: 8px; background: #ffffff26;">
+                      <!-- Trapecio Isósceles: base corta (SL1) arriba, base larga (SL2) abajo -->
+                      <polygon 
+                        :points="`110,60 290,60 330,150 70,150`" 
+                        fill="#d9e18e" 
+                        stroke="#ffffff" 
+                        stroke-width="2.5" 
+                        stroke-linejoin="round"
                       />
-                    </v-col>
-                    <v-col cols="12" md="6">
-                      <v-text-field
-                        v-model.number.lazy="TH"
-                        type="number" step="0.1" min="5"
-                        label="TH (mm)" suffix="mm"
-                        variant="outlined" density="comfortable"
-                        :rules="THRules"
-                        @blur="validateTH"
-                      />
-                    </v-col>
-                  </v-row>
+                      
+                      <!-- Dimensión SL1 (base corta - arriba) -->
+                      <line x1="110" y1="40" x2="290" y2="40" stroke="#0288d1" stroke-width="2.5"/>
+                      <line x1="110" y1="35" x2="110" y2="45" stroke="#0288d1" stroke-width="2"/>
+                      <line x1="290" y1="35" x2="290" y2="45" stroke="#0288d1" stroke-width="2"/>
+                      <text x="200" y="28" font-size="13" font-weight="bold" fill="#0288d1" style="text-anchor: middle;">SL1: {{ SL1.toFixed(1) }}mm</text>
 
-                  <!-- Zoom -->
-                  <v-slider v-model="scale" min="0.05" max="0.8" step="0.001"
-                            label="Zoom" color="primary" thumb-label />
+                      <!-- Dimensión SL2 (base larga - abajo) -->
+                      <line x1="70" y1="170" x2="330" y2="170" stroke="#c96562" stroke-width="2.5"/>
+                      <line x1="70" y1="165" x2="70" y2="175" stroke="#c96562" stroke-width="2"/>
+                      <line x1="330" y1="165" x2="330" y2="175" stroke="#c96562" stroke-width="2"/>
+                      <text x="200" y="195" font-size="13" font-weight="bold" fill="#c96562" style="text-anchor: middle;">SL2: {{ SL2.toFixed(1) }}mm</text>
+
+                      <!-- Dimensión H1 (altura - lado izquierdo) -->
+                      <line x1="50" y1="60" x2="50" y2="150" stroke="#38c48c" stroke-width="2.5"/>
+                      <line x1="45" y1="60" x2="55" y2="60" stroke="#38c48c" stroke-width="2"/>
+                      <line x1="45" y1="150" x2="55" y2="150" stroke="#38c48c" stroke-width="2"/>
+                      <text x="35" y="108" font-size="13" font-weight="bold" fill="#388e3c" style="text-anchor: end; dominant-baseline: middle;">H1: {{ W1.toFixed(1) }}mm</text>
+
+                      <!-- Dimensión A1 (ángulo de corte - esquina inferior derecha) -->
+                      <g>
+                        <!-- Línea de referencia vertical (lado derecho) -->
+                        <line x1="330" y1="150" x2="310" y2="107" stroke="#ff6f00" stroke-width="2" stroke-dasharray="4,2"/>
+                        <!-- Línea del lado oblicuo del trapecio -->
+                        <line x1="330" y1="150" x2="290" y2="150" stroke="#ff6f00" stroke-width="2" stroke-dasharray="4,2"/>
+                        <!-- Arco para el ángulo -->
+                        <path d="M 320,130 A 25,25 0 0,0 310,150" fill="none" stroke="#ff6f00" stroke-width="1.5"/>
+                        <!-- Texto del ángulo -->
+                        <text x="290" y="140" font-size="12" font-weight="bold" fill="#ff6f00" style="text-anchor: middle;">∠° {{ A1.toFixed(1) }}°</text>
+                      </g>
+                    </svg>
+                  </div>
                 </div>
-
-                <v-alert v-if="!calcError" type="success" variant="tonal" class="mt-2">
-                  N (por OD nominal) ⇒ <strong>{{ N }}</strong> •
-                  Δ={{ (360/N).toFixed(3) }}° •
-                  A1={{ A1.toFixed(3) }}°
-                </v-alert>
-                <v-alert v-else type="error" variant="tonal" class="mt-2">
-                  {{ calcError }}
-                </v-alert>
-              </v-card-text>
-            </v-card>
-          </v-col>
-
-          <!-- PREVIEW + SALIDA -->
-          <v-col cols="12" md="7">
-            <v-card elevation="3">
-              <v-card-title class="text-h6">Trapecio</v-card-title>
-              <v-card-text class="pa-2">
+                <v-divider class="my-5"></v-divider>
+                <!-- SVG del Trapecio -->
                 <PreviewCanvas
                   :ID="ID" :OD="OD" :coeff="coeff"
                   :scale="scale" :wheel-step="wheelStep"
@@ -829,47 +789,43 @@ watch(layerCombination, (combo) => {
                   @update:scale="v => scale = v"
                   @update:pan-x="v => panX = v"
                   @update:pan-y="v => panY = v"
-                  @update:layers="v => layers = Math.max(3, v)"
+                  @update:show-guides="v => showGuides = v"
+                  @update:layers="v => { layers = v; validateLayers() }"
                   @update:layers-thicknesses="onUpdateLayerThicknesses"
                 />
-              </v-card-text>
+                
+                <v-alert v-if="radialError" type="warning" variant="tonal" class="mt-2 mb-3">
+                  <strong>⚠ Advertencia:</strong> {{ radialErrorMsg }}
+                </v-alert>
+                
+                <v-alert v-if="!calcError" type="success" variant="tonal" class="mt-2">
+                  <strong>{{ N }}</strong> Lados (por OD nominal) →
+                  Δ°= 360/{{ N }} = {{ (360/N).toFixed(3) }}° •
+                  corte ∠°= {{ A1.toFixed(3) }}°
+                </v-alert>
+                <v-alert v-else type="error" variant="tonal" class="mt-2">
+                  {{ calcError }}
+                </v-alert>
 
-              <!-- Salida SL1/SL2/W1/A1 -->
-              <v-card-text class="py-4">
-                <div class="d-flex flex-wrap ga-4">
-                  <v-chip color="primary" variant="tonal" class="ma-1">
-                    SL1 (corta) = {{ SL1.toFixed(2) }} mm
-                  </v-chip>
-                  <v-chip color="primary" variant="tonal" class="ma-1">
-                    SL2 (larga) = {{ SL2.toFixed(2) }} mm
-                  </v-chip>
-                  <v-chip color="secondary" variant="tonal" class="ma-1">
-                    W1 (altura) = {{ W1.toFixed(2) }} mm
-                  </v-chip>
-                  <v-chip color="info" variant="tonal" class="ma-1">
-                    A1 (ángulo) = {{ A1.toFixed(3) }}°
-                  </v-chip>
-                  <v-chip color="success" variant="tonal" class="ma-1">
-                    Espesor/capa = {{ thicknessPerLayer.toFixed(3) }} mm
-                  </v-chip>
-                </div>
-
-                <!-- Combinación de capas recomendada -->
-                <v-divider class="my-4"></v-divider>
-                <div v-if="layerCombination" class="mt-4">
-                  <v-card-subtitle>Combinación de Capas Recomendada</v-card-subtitle>
-                  <v-chip color="warning" variant="tonal" class="ma-1">
-                    {{ layerCombination.layerCount }} capas × {{ layerCombination.layers[0].thickness }} mm = {{ layerCombination.totalThickness }} mm
-                  </v-chip>
-                  <v-list dense class="mt-2">
-                    <v-list-item v-for="(layer, idx) in layerCombination.layers" :key="idx" class="text-caption">
-                      Capa {{ idx + 1 }}: {{ layer.thickness }}mm × {{ layer.length }}mm × {{ layer.width }}mm
-                    </v-list-item>
-                  </v-list>
-                </div>
+                    <!-- Combinación de capas recomendada -->
+                    <v-divider class="my-2"></v-divider>
+                    <div v-if="layerCombination" class="mt-4">
+                      <v-card-subtitle>Capas Recomendadas</v-card-subtitle>
+                      <v-chip color="warning" variant="tonal" class="ma-4">
+                        {{ layerCombination.layerCount }} capas × {{ layerCombination.layers[0].thickness }} mm = {{ layerCombination.totalThickness }} mm
+                      </v-chip>
+                      <v-list dense class="mt-2">
+                        <v-list-item v-for="(layer, idx) in layerCombination.layers" :key="idx" class="text-caption">
+                          Capa {{ idx + 1 }}: {{ layer.thickness }}mm × {{ layer.length }}mm × {{ layer.width }}mm
+                        </v-list-item>
+                      </v-list>
+                    </div>
               </v-card-text>
             </v-card>
           </v-col>
+
+          <!-- PREVIEW + SALIDA -->
+          
         </v-row>
         </v-container>
         </v-window-item>
@@ -924,6 +880,52 @@ watch(layerCombination, (combo) => {
                 </v-row>
                 
                 <v-divider class="my-4"></v-divider>
+
+                <div v-if="recommendedCuttingLayouts.length > 0" class="mb-6">
+                  <div class="text-subtitle-2 mb-3">Patrones por hojas estándar (recomendación)</div>
+                  <v-row dense>
+                    <v-col
+                      v-for="(item, idx) in recommendedCuttingLayouts"
+                      :key="`rec-${idx}`"
+                      cols="12"
+                      md="6"
+                      lg="4"
+                    >
+                      <v-card variant="outlined" class="pa-2">
+                        <v-card-subtitle class="text-caption">
+                          {{ item.material.thickness }}mm × {{ item.material.length }}mm × {{ item.material.width }}mm
+                        </v-card-subtitle>
+                        <div class="text-caption mb-2">
+                          {{ item.trapsToRender }} de {{ item.trapezoidsPerSheet }} trapecios/hoja • {{ item.sheetsRequired }} hojas • {{ item.wastePercentage.toFixed(1) }}% desperdicio
+                        </div>
+                        <svg
+                          :width="recommendedCanvasWidth"
+                          :height="recommendedCanvasHeight"
+                          style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px"
+                        >
+                          <rect
+                            :x="20"
+                            :y="20"
+                            :width="item.sheetScaledWidth"
+                            :height="item.sheetScaledHeight"
+                            fill="#ffffff"
+                            stroke="#64748b"
+                            stroke-width="2"
+                          />
+                          <g v-for="(trap, tIdx) in item.layout" :key="tIdx">
+                            <polygon
+                              :points="trap.points"
+                              :fill="tIdx % 2 === 0 ? '#8ac29a70' : '#fbbf2470'"
+                              :stroke="tIdx % 2 === 0 ? '#2d6a4f' : '#d97706'"
+                              stroke-width="1.25"
+                              stroke-dasharray="4 2"
+                            />
+                          </g>
+                        </svg>
+                      </v-card>
+                    </v-col>
+                  </v-row>
+                </div>
                 
                 <div class="text-subtitle-2 mb-3">Visualización Detallada (Opcional)</div>
                 
