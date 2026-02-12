@@ -49,10 +49,10 @@ Valida el composable `useInputValidation` que maneja toda la lógica de validaci
 - ✅ Auto-corrige y marca error si OD <= 0
 - ✅ Marca error si OD <= ID
 
-#### `validateRadialGap()`
-- ✅ No muestra advertencia si gap >= 25mm
-- ✅ Muestra advertencia si gap < 25mm
-- ✅ Muestra valor exacto del gap en advertencia
+#### `validateRadialGap()` (RB "Radial Build")
+- ✅ No muestra advertencia si RB >= 25mm
+- ✅ Muestra advertencia si RB < 25mm
+- ✅ Muestra valor exacto del RB en advertencia
 
 #### `validateTH()`
 - ✅ No muestra error si TH >= 5mm
@@ -138,6 +138,6 @@ La validación implementa **auto-corrección** automática:
 
 Mejoras futuras podrían incluir:
 - Tests para componentes Vue (PreviewCanvas, InputPanel)
-- Tests de integración para flujos completos
+- Tests de integración para flujos completos integrando los recortes de stock tipo 2 
 - Tests de rendimiento para cálculos geométricos
 - Cobertura de casos edge adicionales

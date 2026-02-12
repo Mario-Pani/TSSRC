@@ -41,6 +41,15 @@ const OD = ref<number>(1500)
 const ringCount = ref<number>(6)
 const TH = ref<number>(12)
 const layers = ref<number>(3)
+const orderNumber = ref<string>('')
+const projectLocked = ref(false)
+const orderNumberError = computed(() => {
+  const value = orderNumber.value.trim()
+  return value.length > 0 && !isNumericOrderNumber(value)
+})
+const orderNumberErrorMsg = computed(() =>
+  orderNumberError.value ? 'El numero de orden debe ser numerico' : ''
+)
 
 // ============================================
 // VALIDACIÓN DE INPUTS
@@ -172,6 +181,65 @@ function deleteMaterial(idx: number) {
   }
 }
 
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value)
+}
+
+function sanitizeOrderNumber(value: string): string {
+  return value
+    .trim()
+    .replace(/[^a-zA-Z0-9-_]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+}
+
+function isNumericOrderNumber(value: string): boolean {
+  return /^\d+$/.test(value.trim())
+}
+
+function filterOrderNumberInput() {
+  orderNumber.value = orderNumber.value.replace(/\D+/g, '')
+}
+
+function handleOrderKeydown(event: KeyboardEvent) {
+  const allowedKeys = [
+    'Backspace',
+    'Delete',
+    'ArrowLeft',
+    'ArrowRight',
+    'Tab',
+    'Home',
+    'End'
+  ]
+
+  if (allowedKeys.includes(event.key)) return
+  if (/^\d$/.test(event.key)) return
+
+  event.preventDefault()
+}
+
+function normalizeMaterials(raw: unknown): Material[] | null {
+  if (!Array.isArray(raw)) return null
+
+  const parsed: Material[] = []
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') return null
+
+    const material = item as Material
+    if (!isFiniteNumber(material.thickness) || !isFiniteNumber(material.length) || !isFiniteNumber(material.width)) {
+      return null
+    }
+
+    parsed.push({
+      thickness: material.thickness,
+      length: material.length,
+      width: material.width,
+      inStock: typeof material.inStock === 'boolean' ? material.inStock : true
+    })
+  }
+
+  return parsed
+}
+
 function exportMaterials() {
   const dataStr = JSON.stringify(materials.value, null, 2)
   const dataBlob = new Blob([dataStr], { type: 'application/json' })
@@ -196,23 +264,182 @@ function importMaterials(event: Event) {
   const reader = new FileReader()
   reader.onload = (e) => {
     try {
-      const imported = JSON.parse(e.target?.result as string)
-      if (Array.isArray(imported) && imported.every(m => 
-        typeof m.thickness === 'number' && 
-        typeof m.length === 'number' && 
-        typeof m.width === 'number'
-      )) {
-        materials.value = imported.map(m => ({ ...m, inStock: m.inStock ?? true }))
-        alert('Materiales importados correctamente')
-      } else {
+      const imported = normalizeMaterials(JSON.parse(e.target?.result as string))
+      if (!imported) {
         alert('Formato de archivo inválido')
+        return
       }
+
+      materials.value = imported
+      alert('Materiales importados correctamente')
     } catch {
       alert('Error al leer el archivo')
     }
   }
   reader.readAsText(file)
   const importInputEl = document.getElementById('importInput') as HTMLInputElement
+  if (importInputEl) importInputEl.value = ''
+}
+
+function buildProjectSnapshot() {
+  return {
+    version: 1,
+    savedAt: new Date().toISOString(),
+    orderNumber: orderNumber.value.trim(),
+    inputs: {
+      ID: ID.value,
+      OD: OD.value,
+      TH: TH.value,
+      ringCount: ringCount.value,
+      layers: layers.value,
+      coeffPct: coeffPct.value,
+      layerThicknesses: layerThicknesses.value.slice()
+    },
+    ui: {
+      activeTab: activeTab.value,
+      showGuides: showGuides.value,
+      scale: scale.value,
+      panX: panX.value,
+      panY: panY.value
+    },
+    cutting: {
+      kerf: kerf.value,
+      sheetLength: sheetLength.value,
+      sheetWidth: sheetWidth.value,
+      selectedMaterialForCutting: selectedMaterialForCutting.value
+    },
+    materials: materials.value.map((m) => ({ ...m, inStock: m.inStock ?? true }))
+  }
+}
+
+function exportProject() {
+  if (!orderNumber.value.trim()) {
+    const input = window.prompt('Ingrese el numero de orden antes de guardar:')
+    if (input === null) return
+    orderNumber.value = input.trim()
+    if (!orderNumber.value) {
+      alert('El numero de orden es obligatorio')
+      return
+    }
+  }
+  if (!isNumericOrderNumber(orderNumber.value)) {
+    alert('El numero de orden debe ser numerico')
+    return
+  }
+  const snapshot = buildProjectSnapshot()
+  const dataStr = JSON.stringify(snapshot, null, 2)
+  const dataBlob = new Blob([dataStr], { type: 'application/json' })
+  const url = URL.createObjectURL(dataBlob)
+  const link = document.createElement('a')
+  const safeOrder = sanitizeOrderNumber(orderNumber.value) || 'sin-orden'
+  link.href = url
+  link.download = `${safeOrder}.json`
+  link.click()
+  URL.revokeObjectURL(url)
+}
+
+function triggerProjectImport() {
+  const importInput = document.getElementById('projectImportInput') as HTMLInputElement
+  importInput?.click()
+}
+
+function importProject(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file) return
+
+  const reader = new FileReader()
+  reader.onload = (e) => {
+    try {
+      const raw = JSON.parse(e.target?.result as string)
+      if (!raw || typeof raw !== 'object') {
+        alert('Formato de archivo inválido')
+        return
+      }
+
+      const snapshot = raw as {
+        version?: number
+        orderNumber?: string
+        inputs?: {
+          ID?: number
+          OD?: number
+          TH?: number
+          ringCount?: number
+          layers?: number
+          coeffPct?: number
+          layerThicknesses?: number[]
+        }
+        ui?: {
+          activeTab?: number
+          showGuides?: boolean
+          scale?: number
+          panX?: number
+          panY?: number
+        }
+        cutting?: {
+          kerf?: number
+          sheetLength?: number
+          sheetWidth?: number
+          selectedMaterialForCutting?: number | null
+        }
+        materials?: Material[]
+      }
+
+      if (typeof snapshot.orderNumber === 'string') {
+        orderNumber.value = snapshot.orderNumber
+      }
+
+      if (snapshot.inputs) {
+        const inputs = snapshot.inputs
+        suppressRecommendation.value = true
+        skipThicknessSync.value = true
+
+        if (isFiniteNumber(inputs.ID)) ID.value = inputs.ID
+        if (isFiniteNumber(inputs.OD)) OD.value = inputs.OD
+        if (isFiniteNumber(inputs.TH)) TH.value = inputs.TH
+        if (isFiniteNumber(inputs.ringCount)) ringCount.value = inputs.ringCount
+        if (isFiniteNumber(inputs.layers)) layers.value = inputs.layers
+        if (isFiniteNumber(inputs.coeffPct)) coeffPct.value = inputs.coeffPct
+
+        if (Array.isArray(inputs.layerThicknesses) && inputs.layerThicknesses.every(isFiniteNumber)) {
+          onUpdateLayerThicknesses(inputs.layerThicknesses)
+        }
+      }
+
+      if (snapshot.ui) {
+        const ui = snapshot.ui
+        if (isFiniteNumber(ui.activeTab)) activeTab.value = ui.activeTab
+        if (typeof ui.showGuides === 'boolean') showGuides.value = ui.showGuides
+        if (isFiniteNumber(ui.scale)) scale.value = ui.scale
+        if (isFiniteNumber(ui.panX)) panX.value = ui.panX
+        if (isFiniteNumber(ui.panY)) panY.value = ui.panY
+      }
+
+      if (snapshot.cutting) {
+        const cutting = snapshot.cutting
+        if (isFiniteNumber(cutting.kerf)) kerf.value = cutting.kerf
+        if (isFiniteNumber(cutting.sheetLength)) sheetLength.value = cutting.sheetLength
+        if (isFiniteNumber(cutting.sheetWidth)) sheetWidth.value = cutting.sheetWidth
+        if (cutting.selectedMaterialForCutting === null || isFiniteNumber(cutting.selectedMaterialForCutting)) {
+          selectedMaterialForCutting.value = cutting.selectedMaterialForCutting
+        }
+      }
+
+      if (snapshot.materials) {
+        const normalized = normalizeMaterials(snapshot.materials)
+        if (normalized) materials.value = normalized
+      }
+
+      projectLocked.value = true
+
+      alert('Proyecto cargado correctamente')
+    } catch {
+      alert('Error al leer el archivo')
+    }
+  }
+  reader.readAsText(file)
+
+  const importInputEl = document.getElementById('projectImportInput') as HTMLInputElement
   if (importInputEl) importInputEl.value = ''
 }
 
@@ -613,6 +840,53 @@ watch(layerCombination, (combo) => {
     <v-app-bar color="primary" elevation="2">
       <v-app-bar-title class="text-subtitle-1 font-weight-medium">Anillo Estático en Segmentos Trapezoidales</v-app-bar-title>
       <v-spacer />
+      <div class="d-flex align-center gap-2">
+        <v-text-field
+          v-model="orderNumber"
+          type="text"
+          inputmode="numeric"
+          pattern="\d*"
+          label="Orden"
+          variant="outlined"
+          density="compact"
+          hide-details
+          :disabled="projectLocked"
+          :error="orderNumberError"
+          :error-messages="orderNumberErrorMsg"
+          @keydown="handleOrderKeydown"
+          @input="filterOrderNumberInput"
+          style="width: clamp(160px, 22vw, 260px)"
+        />
+        <v-tooltip text="Guardar proyecto">
+          <template #activator="{ props }">
+            <v-btn
+              size="small"
+              color="info"
+              icon="mdi-content-save"
+              @click="exportProject"
+              v-bind="props"
+            />
+          </template>
+        </v-tooltip>
+        <v-tooltip text="Cargar proyecto">
+          <template #activator="{ props }">
+            <v-btn
+              size="small"
+              color="info"
+              icon="mdi-folder-open"
+              @click="triggerProjectImport"
+              v-bind="props"
+            />
+          </template>
+        </v-tooltip>
+        <input
+          id="projectImportInput"
+          type="file"
+          accept=".json"
+          style="display:none"
+          @change="importProject"
+        />
+      </div>
       <v-tooltip :text="isDark ? 'Oscuro' : 'Claro'">
         <template #activator="{ props }">
           <v-btn
@@ -652,6 +926,7 @@ watch(layerCombination, (combo) => {
                       v-model.number="ID"
                       type="number" min="1" step="1"
                       label="ID (mm)" variant="outlined" density="comfortable"
+                      :disabled="projectLocked"
                       :error="idError"
                       :error-messages="idErrorMsg"
                       @blur="validateID"
@@ -662,6 +937,7 @@ watch(layerCombination, (combo) => {
                       v-model.number="OD"
                       type="number" min="1" step="1"
                       label="OD (mm)" variant="outlined" density="comfortable"
+                      :disabled="projectLocked"
                       :error="odError"
                       :error-messages="odErrorMsg"
                       @blur="validateOD"
@@ -673,6 +949,7 @@ watch(layerCombination, (combo) => {
                       type="number" step="0.01"
                       label="Coeficiente ±(%)" suffix="%"
                       variant="outlined" density="comfortable"
+                      :disabled="projectLocked"
                     />
                   </v-col>
                   <v-col cols="12" sm="6" md="4" lg="2">
@@ -681,6 +958,7 @@ watch(layerCombination, (combo) => {
                       type="number" step="0.1" min="5"
                       label="TH (mm)" suffix="mm"
                       variant="outlined" density="comfortable"
+                      :disabled="projectLocked"
                       :error="thError"
                       :error-messages="thErrorMsg"
                       @blur="validateTH"
@@ -692,6 +970,7 @@ watch(layerCombination, (combo) => {
                       type="number" min="1" step="1"
                       label="Cantidad Anillos"
                       variant="outlined" density="comfortable"
+                      :disabled="projectLocked"
                       :error="ringCountError"
                       :error-messages="ringCountErrorMsg"
                       @blur="validateRingCount"
@@ -735,8 +1014,8 @@ watch(layerCombination, (combo) => {
                   @update:pan-x="v => panX = v"
                   @update:pan-y="v => panY = v"
                   @update:show-guides="v => showGuides = v"
-                  @update:layers="v => { layers = v; validateLayers() }"
-                  @update:layers-thicknesses="onUpdateLayerThicknesses"
+                  @update:layers="v => { if (!projectLocked) { layers = v; validateLayers() } }"
+                  @update:layers-thicknesses="v => { if (!projectLocked) onUpdateLayerThicknesses(v) }"
                 />
                 
                 <v-alert v-if="radialError" type="warning" variant="tonal" class="mt-2 mb-3">
@@ -886,6 +1165,7 @@ watch(layerCombination, (combo) => {
                       persistent-hint
                       variant="outlined"
                       density="comfortable"
+                      :disabled="projectLocked"
                     />
                     <v-text-field
                       v-model.number="sheetLength"
@@ -893,6 +1173,7 @@ watch(layerCombination, (combo) => {
                       label="Largo de hoja (mm)"
                       variant="outlined"
                       density="comfortable"
+                      :disabled="projectLocked"
                     />
                     <v-text-field
                       v-model.number="sheetWidth"
@@ -900,6 +1181,7 @@ watch(layerCombination, (combo) => {
                       label="Ancho de hoja (mm)"
                       variant="outlined"
                       density="comfortable"
+                      :disabled="projectLocked"
                     />
                     <v-text-field
                       v-model.number="kerf"
@@ -911,6 +1193,7 @@ watch(layerCombination, (combo) => {
                       density="comfortable"
                       step="0.1"
                       min="0"
+                      :disabled="projectLocked"
                     />
                     
                     <v-divider class="my-4"></v-divider>
@@ -1013,7 +1296,7 @@ watch(layerCombination, (combo) => {
                 <div class="d-flex gap-2">
                   <v-tooltip text="Agregar nuevo material">
                     <template #activator="{ props }">
-                      <v-btn size="small" color="success" icon="mdi-plus" @click="openAddMaterialDialog" v-bind="props" />
+                      <v-btn size="small" color="success" icon="mdi-plus" :disabled="projectLocked" @click="openAddMaterialDialog" v-bind="props" />
                     </template>
                   </v-tooltip>
                   <v-tooltip text="Descargar materiales como JSON">
@@ -1023,7 +1306,7 @@ watch(layerCombination, (combo) => {
                   </v-tooltip>
                   <v-tooltip text="Cargar materiales desde JSON">
                     <template #activator="{ props }">
-                      <v-btn size="small" color="warning" icon="mdi-upload" @click="triggerImportFile" v-bind="props" />
+                      <v-btn size="small" color="warning" icon="mdi-upload" :disabled="projectLocked" @click="triggerImportFile" v-bind="props" />
                     </template>
                   </v-tooltip>
                   <input id="importInput" type="file" accept=".json" style="display:none" @change="importMaterials" />
@@ -1071,6 +1354,7 @@ watch(layerCombination, (combo) => {
                                 :color="materials[materials.indexOf(mat)].inStock ? 'success' : 'error'"
                                 :icon="materials[materials.indexOf(mat)].inStock ? 'mdi-check-circle' : 'mdi-close-circle'"
                                 size="small"
+                                  :disabled="projectLocked"
                                 @click="materials[materials.indexOf(mat)].inStock = !materials[materials.indexOf(mat)].inStock"
                                 v-bind="props"
                               />
@@ -1081,12 +1365,12 @@ watch(layerCombination, (combo) => {
                           <div class="d-flex gap-1">
                             <v-tooltip text="Editar">
                               <template #activator="{ props }">
-                                <v-btn size="x-small" icon="mdi-pencil" color="primary" @click="openEditMaterialDialog(materials.indexOf(mat))" v-bind="props" />
+                                <v-btn size="x-small" icon="mdi-pencil" color="primary" :disabled="projectLocked" @click="openEditMaterialDialog(materials.indexOf(mat))" v-bind="props" />
                               </template>
                             </v-tooltip>
                             <v-tooltip text="Eliminar">
                               <template #activator="{ props }">
-                                <v-btn size="x-small" icon="mdi-delete" color="error" @click="deleteMaterial(materials.indexOf(mat))" v-bind="props" />
+                                <v-btn size="x-small" icon="mdi-delete" color="error" :disabled="projectLocked" @click="deleteMaterial(materials.indexOf(mat))" v-bind="props" />
                               </template>
                             </v-tooltip>
                           </div>

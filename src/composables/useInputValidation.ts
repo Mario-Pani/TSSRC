@@ -1,8 +1,22 @@
 import { ref, Ref } from 'vue'
 
 /**
- * Composable para manejar la validación de inputs
- * Proporciona funciones de validación reutilizables con auto-corrección
+ * Composable para la validación de inputs del formulario
+ * 
+ * Proporciona validación reactiva con auto-corrección automática para todos los campos
+ * del formulario: ID, OD, TH, ringCount, layers.
+ * 
+ * **Características:**
+ * - Estados reactivos de error para cada campo
+ * - Funciones de validación con auto-corrección
+ * - Validación del gap radial (advierte si < 25mm)
+ * - Mensajes de error descriptivos
+ * 
+ * @returns {Object} Objeto con estados de error y funciones de validación
+ * 
+ * @example
+ * const { idError, idErrorMsg, validateID } = useInputValidation()
+ * watch(ID, () => validateID(ID, OD))
  */
 export function useInputValidation() {
   // Estado de validación para ID
@@ -30,9 +44,18 @@ export function useInputValidation() {
   const layersErrorMsg = ref<string>('')
 
   /**
-   * Valida el ID
-   * - Debe ser > 0
-   * - Debe ser < OD
+   * Valida el diámetro interno (ID) del trapecio
+   * 
+   * **Reglas de validación:**
+   * - ID debe ser > 0 (se auto-corrige a 100 si incumple)
+   * - ID debe ser menor que OD
+   * 
+   * También dispara validación del gap radial (OD - ID)
+   * 
+   * @param {Ref<number>} ID - Referencia reactiva al ID en mm
+   * @param {Ref<number>} OD - Referencia reactiva al OD en mm
+   * 
+   * @throws Establece idError=true y idErrorMsg con descripción si es inválido
    */
   function validateID(ID: Ref<number>, OD: Ref<number>) {
     idError.value = false
@@ -52,9 +75,18 @@ export function useInputValidation() {
   }
 
   /**
-   * Valida el OD
-   * - Debe ser > 0
-   * - Debe ser > ID
+   * Valida el diámetro externo (OD) del trapecio
+   * 
+   * **Reglas de validación:**
+   * - OD debe ser > 0 (se auto-corrige a 2000 si incumple)
+   * - OD debe ser mayor que ID
+   * 
+   * También dispara validación del gap radial (OD - ID)
+   * 
+   * @param {Ref<number>} ID - Referencia reactiva al ID en mm
+   * @param {Ref<number>} OD - Referencia reactiva al OD en mm
+   * 
+   * @throws Establece odError=true y odErrorMsg con descripción si es inválido
    */
   function validateOD(ID: Ref<number>, OD: Ref<number>) {
     odError.value = false
@@ -74,8 +106,17 @@ export function useInputValidation() {
   }
 
   /**
-   * Valida el gap radial (OD - ID)
-   * - Advertencia si < 25mm
+   * Valida el gap radial (diferencia entre OD e ID)
+   * 
+   * Advierte al usuario si la construcción radial es muy estrecha (<25mm),
+   * lo cual puede causar problemas de corte y debilitamiento del material.
+   * 
+   * **Umbral:** Gap mínimo recomendado = 25mm
+   * 
+   * @param {Ref<number>} ID - Referencia reactiva al ID en mm
+   * @param {Ref<number>} OD - Referencia reactiva al OD en mm
+   * 
+   * @throws Establece radialError=true si gap < 25mm (advertencia no-bloqueante)
    */
   function validateRadialGap(ID: Ref<number>, OD: Ref<number>) {
     radialError.value = false
@@ -89,9 +130,15 @@ export function useInputValidation() {
   }
 
   /**
-   * Valida el TH (espesor)
-   * - Debe ser >= 5mm
-   * - Auto-corrección si es inválido
+   * Valida el espesor (TH) del material
+   * 
+   * **Reglas de validación:**
+   * - TH debe ser >= 5mm (espesor mínimo soportado)
+   * - Se auto-corrige a 5mm si es menor
+   * 
+   * @param {Ref<number>} TH - Referencia reactiva al espesor en mm
+   * 
+   * @throws Establece thError=true y thErrorMsg si TH < 5mm
    */
   function validateTH(TH: Ref<number>) {
     thError.value = false
@@ -105,9 +152,17 @@ export function useInputValidation() {
   }
 
   /**
-   * Valida el ringCount (cantidad de anillos)
-   * - Debe estar entre 1 y 24
-   * - Auto-corrección si está fuera de rango
+   * Valida la cantidad de anillos (ringCount)
+   * 
+   * **Reglas de validación:**
+   * - Debe estar entre 1 y 24 anillos
+   * - Se auto-corrige al límite más cercano si incumple
+   * 
+   * Un anillo representa una vuelta completa del trapecio.
+   * 
+   * @param {Ref<number>} ringCount - Referencia reactiva a cantidad de anillos
+   * 
+   * @throws Establece ringCountError=true si está fuera de rango [1, 24]
    */
   function validateRingCount(ringCount: Ref<number>) {
     ringCountError.value = false
@@ -126,9 +181,18 @@ export function useInputValidation() {
   }
 
   /**
-   * Valida el número de capas
-   * - Debe estar entre 3 y 8
-   * - Auto-corrección si está fuera de rango
+   * Valida el número de capas (layers) del material
+   * 
+   * **Reglas de validación:**
+   * - Debe estar entre 3 y 8 capas
+   * - Se auto-corrige al límite más cercano si incumple
+   * 
+   * Más capas = mayor flexibilidad pero más trabajo de corte.
+   * Menos capas = estructura más rígida pero menos flexible.
+   * 
+   * @param {Ref<number>} layers - Referencia reactiva a cantidad de capas
+   * 
+   * @throws Establece layersError=true si está fuera de rango [3, 8]
    */
   function validateLayers(layers: Ref<number>) {
     layersError.value = false

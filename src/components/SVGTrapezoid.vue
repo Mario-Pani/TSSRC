@@ -52,10 +52,34 @@
 </template>
 
 <script setup lang="ts">
+/**
+ * Componente SVGTrapezoid
+ * 
+ * Renderiza un diagrama SVG responsivo del trapecio anular con acotaciones
+ * 
+ * **Características:**
+ * - 100% responsivo: se adapta a desktop, tablet y móvil
+ * - Acotaciones con colores codificados:
+ *   - Azul (#0288d1): SL1 (lado corto interno)
+ *   - Rojo/Naranja (#c96562): SL2 (lado largo externo)
+ *   - Verde (#38c48c): H1 (altura vertical)
+ *   - Naranja (#ff6f00): Ángulo de corte (A1)
+ * - SVG escalado automáticamente según viewport
+ * - Mantiene proporciones con preserveAspectRatio
+ * 
+ * @component
+ * @example
+ * <SVGTrapezoid :SL1="100" :SL2="150" :H1="50" :A1="22.5" />
+ */
+
 interface Props {
+  /** Lado interno corto (SL1) en mm */
   SL1: number
+  /** Lado externo largo (SL2) en mm */
   SL2: number
+  /** Altura vertical del trapecio (H1) en mm */
   H1: number
+  /** Ángulo de corte en grados (A1) */
   A1: number
 }
 
