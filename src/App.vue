@@ -36,11 +36,21 @@ const activeTab = ref(0)
 // ============================================
 // Estos refs se definen antes que los computed que los usan
 // ORDEN IMPORTA: evita "ReferenceError: X is not defined"
-const ID = ref<number>(1200)
-const OD = ref<number>(1500)
+const ID = ref<number>(800)
+const OD = ref<number>(1000)
 const ringCount = ref<number>(6)
-const TH = ref<number>(12)
+const TH = ref<number>(12.9)
 const layers = ref<number>(3)
+const defaultLayerColors = [
+  { fill: '#8ac29a', stroke: '#8aa89a' },
+  { fill: '#b5f8e4', stroke: '#c1bcd4' }
+]
+const layerColors = ref<Array<{ fill: string; stroke: string }>>(
+  Array.from({ length: layers.value }, (_, i) => ({
+    fill: defaultLayerColors[i % 2].fill,
+    stroke: defaultLayerColors[i % 2].stroke
+  }))
+)
 const orderNumber = ref<string>('')
 const projectLocked = ref(false)
 const orderNumberError = computed(() => {
@@ -94,6 +104,15 @@ function validateRingCount() {
 
 function validateLayers() {
   validate_Layers(layers)
+}
+
+function layerBoxFill(idx: number): string {
+  const color = layerColors.value[idx]?.fill ?? defaultLayerColors[idx % 2].fill
+  return color.length === 7 ? `${color}50` : color
+}
+
+function layerBoxBorder(idx: number): string {
+  return layerColors.value[idx]?.stroke ?? defaultLayerColors[idx % 2].stroke
 }
 
 function createDebouncedValidator(fn: () => void, delay = 250) {
@@ -338,6 +357,30 @@ function exportProject() {
   URL.revokeObjectURL(url)
 }
 
+function resetProject() {
+  if (!confirm('¿Iniciar un nuevo proyecto? Los cambios no guardados se perderán.')) return
+  ID.value = 800
+  OD.value = 1000
+  ringCount.value = 6
+  TH.value = 12.9
+  layers.value = 3
+  orderNumber.value = ''
+  projectLocked.value = false
+  coeffPct.value = 5
+  activeTab.value = 0
+  showGuides.value = true
+  selectedMaterialForCutting.value = null
+  sheetLength.value = 3200
+  sheetWidth.value = 2108
+  kerf.value = 3
+  layerThicknesses.value = Array.from({ length: layers.value }, () => TH.value / layers.value)
+  skipThicknessSync.value = false
+  syncingRecommendation.value = false
+  suppressRecommendation.value = false
+  selectedRecommendedIndex.value = 0
+  resetview()
+}
+
 function triggerProjectImport() {
   const importInput = document.getElementById('projectImportInput') as HTMLInputElement
   importInput?.click()
@@ -459,7 +502,7 @@ const recommendedCanvasWidth = 360
 const recommendedCanvasHeight = 260
 
 // Coeficiente en % (editable) ⇄ factor
-const coeffPct = ref<number>(0.35)
+const coeffPct = ref<number>(5)
 const coeff = computed(() => 1 + ((+coeffPct.value || 0) / 100))
 
 function recommendLayerCount(targetTH: number, minLayers = 3, maxLayers = 8) {
@@ -636,9 +679,7 @@ const showGuides = ref(true)
 const {
   trapezoidBoundingBox,
   trapezoidsPerSheet,
-  wastePercentage,
   calculateTrapezoidsPerSheet,
-  computeWastePercentageFor,
   computeCuttingScaleFor,
   buildNestingLayout
 } = useNestingCalculations(dims, sheetLength, sheetWidth, kerf)
@@ -650,12 +691,168 @@ const { cuttingBreakdown, recommendedCuttingLayouts } = useCuttingBreakdown(
   N,
   ringCount,
   calculateTrapezoidsPerSheet,
-  computeWastePercentageFor,
   computeCuttingScaleFor,
   buildNestingLayout,
   recommendedCanvasWidth,
   recommendedCanvasHeight
 )
+
+const selectedRecommendedIndex = ref(0)
+const selectedRecommendedLayout = computed(() => {
+  return recommendedCuttingLayouts.value[selectedRecommendedIndex.value] ?? null
+})
+
+const selectedRecommendedTrapArea = computed(() => {
+  return ((SL1.value + SL2.value) / 2) * H1.value
+})
+
+const selectedRecommendedSheetArea = computed(() => {
+  const item = selectedRecommendedLayout.value
+  if (!item) return 0
+  return item.material.length * item.material.width
+})
+
+const selectedRecommendedHasPartial = computed(() => {
+  const item = selectedRecommendedLayout.value
+  if (!item || item.trapezoidsPerSheet <= 0) return false
+  return item.trapezoidsNeeded % item.trapezoidsPerSheet !== 0
+})
+
+const selectedRecommendedFullSheets = computed(() => {
+  const item = selectedRecommendedLayout.value
+  if (!item || item.trapezoidsPerSheet <= 0) return 0
+  return Math.floor(item.trapezoidsNeeded / item.trapezoidsPerSheet)
+})
+
+const selectedRecommendedPartialTraps = computed(() => {
+  const item = selectedRecommendedLayout.value
+  if (!item || item.trapezoidsPerSheet <= 0) return 0
+  return item.trapezoidsNeeded % item.trapezoidsPerSheet
+})
+
+const selectedRecommendedFullUtilization = computed(() => {
+  const item = selectedRecommendedLayout.value
+  const sheetArea = selectedRecommendedSheetArea.value
+  if (!item || sheetArea <= 0) return 0
+  return (item.trapezoidsPerSheet * selectedRecommendedTrapArea.value) / sheetArea
+})
+
+const selectedRecommendedPartialUtilization = computed(() => {
+  const sheetArea = selectedRecommendedSheetArea.value
+  if (sheetArea <= 0) return 0
+  return (selectedRecommendedPartialTraps.value * selectedRecommendedTrapArea.value) / sheetArea
+})
+
+const selectedRecommendedOverallUtilization = computed(() => {
+  const item = selectedRecommendedLayout.value
+  const sheetArea = selectedRecommendedSheetArea.value
+  if (!item || sheetArea <= 0 || item.sheetsRequired <= 0) return 0
+  return (item.trapezoidsNeeded * selectedRecommendedTrapArea.value)
+    / (item.sheetsRequired * sheetArea)
+})
+
+const selectedRecommendedFullLayout = computed(() => {
+  const item = selectedRecommendedLayout.value
+  if (!item) return null
+  return buildNestingLayout(
+    item.material.length,
+    item.material.width,
+    item.scale,
+    item.trapezoidsPerSheet
+  )
+})
+
+const selectedRecommendedPartialLayout = computed(() => {
+  const item = selectedRecommendedLayout.value
+  if (!item || !selectedRecommendedHasPartial.value) return null
+  return buildNestingLayout(
+    item.material.length,
+    item.material.width,
+    item.scale,
+    selectedRecommendedPartialTraps.value
+  )
+})
+
+function exportRecommendedLayoutDxf(target: 'full' | 'partial' | 'single') {
+  const item = selectedRecommendedLayout.value
+  if (!item) return
+  if (selectedRecommendedFullSheets.value === 0 && target !== 'partial') return
+
+  const fullLayout = selectedRecommendedFullLayout.value ?? item.layout
+  const partialLayout = selectedRecommendedPartialLayout.value ?? []
+  const singleLayout = item.layout
+
+  const layoutMap: Record<'full' | 'partial' | 'single', { title: string; traps: Array<{ points: string }> }> = {
+    full: { title: 'Hoja completa', traps: fullLayout },
+    partial: { title: 'Hoja parcial', traps: partialLayout },
+    single: { title: 'Layout recomendado', traps: singleLayout }
+  }
+
+  if (target === 'partial' && !selectedRecommendedHasPartial.value) return
+
+  const selected = layoutMap[target]
+
+  const toMm = (xPx: number, yPx: number) => {
+    const x = (xPx - 20) / item.scale
+    const yFromTop = (yPx - 20) / item.scale
+    const y = item.material.width - yFromTop
+    return { x, y }
+  }
+
+  const dxfLine = (layer: string, p1: { x: number; y: number }, p2: { x: number; y: number }) => {
+    return `0\nLINE\n8\n${layer}\n10\n${p1.x.toFixed(4)}\n20\n${p1.y.toFixed(4)}\n11\n${p2.x.toFixed(4)}\n21\n${p2.y.toFixed(4)}\n`
+  }
+
+  const dxfPolygonAsLines = (layer: string, points: Array<{ x: number; y: number }>) => {
+    if (points.length < 2) return ''
+    let out = ''
+    for (let i = 0; i < points.length; i++) {
+      const p1 = points[i]
+      const p2 = points[(i + 1) % points.length]
+      out += dxfLine(layer, p1, p2)
+    }
+    return out
+  }
+
+  const parseTrapPoints = (pointsStr: string) => {
+    return pointsStr.split(' ').map((pair) => {
+      const [xStr, yStr] = pair.split(',')
+      return toMm(Number(xStr), Number(yStr))
+    })
+  }
+
+  const sheetPoints = [
+    { x: 0, y: 0 },
+    { x: item.material.length, y: 0 },
+    { x: item.material.length, y: item.material.width },
+    { x: 0, y: item.material.width }
+  ]
+
+  const sheetEntity = dxfPolygonAsLines('HOJA', sheetPoints)
+  const trapEntities = selected.traps
+    .map((trap) => dxfPolygonAsLines('TRAPECIOS', parseTrapPoints(trap.points)))
+    .join('')
+
+  const dxf = `0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1009\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n${sheetEntity}${trapEntities}0\nENDSEC\n0\nEOF\n`
+
+  const blob = new Blob([dxf], { type: 'application/dxf;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = `layout-corte-${selectedRecommendedIndex.value + 1}-${target}.dxf`
+  link.click()
+  URL.revokeObjectURL(url)
+}
+
+watch(() => recommendedCuttingLayouts.value, (layouts) => {
+  if (!layouts.length) {
+    selectedRecommendedIndex.value = 0
+    return
+  }
+  if (selectedRecommendedIndex.value >= layouts.length) {
+    selectedRecommendedIndex.value = 0
+  }
+})
 
 // Escala para dibujar la hoja en el canvas
 const cuttingScale = computed(() => {
@@ -673,6 +870,13 @@ const sheetScaledHeight = computed(() => {
 // Layout de nesting - generar posiciones de trapecios alternados horizontalmente
 const nestingLayout = computed(() => {
   return buildNestingLayout(sheetLength.value, sheetWidth.value, cuttingScale.value)
+})
+
+const utilizationPercentage = computed(() => {
+  const sheetArea = sheetLength.value * sheetWidth.value
+  const trapArea = ((SL1.value + SL2.value) / 2) * H1.value
+  if (sheetArea <= 0) return 0
+  return (trapezoidsPerSheet.value * trapArea) / sheetArea * 100
 })
 
 // Espesor por capa
@@ -868,6 +1072,17 @@ watch(layerCombination, (combo) => {
             />
           </template>
         </v-tooltip>
+        <v-tooltip text="Nuevo proyecto">
+          <template #activator="{ props }">
+            <v-btn
+              size="small"
+              color="info"
+              icon="mdi-file-plus"
+              @click="resetProject"
+              v-bind="props"
+            />
+          </template>
+        </v-tooltip>
         <v-tooltip text="Cargar proyecto">
           <template #activator="{ props }">
             <v-btn
@@ -998,25 +1213,30 @@ watch(layerCombination, (combo) => {
                     </v-chip>
                   </div>
 
-                  <!-- SVG Diagrama del Trapecio Isósceles - Componente Responsivo -->
-                  <SVGTrapezoid :SL1="SL1" :SL2="SL2" :H1="H1" :A1="A1" />
+                  <div class="design-visuals mt-4">
+                    <div class="design-visual-item">
+                      <SVGTrapezoid :SL1="SL1" :SL2="SL2" :H1="H1" :A1="A1" />
+                    </div>
+                    <div class="design-visual-item design-preview-wrap">
+                      <PreviewCanvas
+                        :ID="ID" :OD="OD" :coeff="coeff"
+                        :scale="scale" :wheel-step="wheelStep"
+                        :pan-x="panX" :pan-y="panY"
+                        :layers="layers"
+                        :layers-colors="layerColors"
+                        :layers-thicknesses="layerThicknesses"
+                        :showGuides="showGuides"
+                        @update:scale="v => scale = v"
+                        @update:pan-x="v => panX = v"
+                        @update:pan-y="v => panY = v"
+                        @update:show-guides="v => showGuides = v"
+                        @update:layers="v => { if (!projectLocked) { layers = v; validateLayers() } }"
+                        @update:layers-colors="v => { if (!projectLocked) { layerColors = v } }"
+                        @update:layers-thicknesses="v => { if (!projectLocked) onUpdateLayerThicknesses(v) }"
+                      />
+                    </div>
+                  </div>
                 </div>
-                <v-divider class="my-5"></v-divider>
-                <!-- SVG del Trapecio -->
-                <PreviewCanvas
-                  :ID="ID" :OD="OD" :coeff="coeff"
-                  :scale="scale" :wheel-step="wheelStep"
-                  :pan-x="panX" :pan-y="panY"
-                  :layers="layers"
-                  :layers-thicknesses="layerThicknesses"
-                  :showGuides="showGuides"
-                  @update:scale="v => scale = v"
-                  @update:pan-x="v => panX = v"
-                  @update:pan-y="v => panY = v"
-                  @update:show-guides="v => showGuides = v"
-                  @update:layers="v => { if (!projectLocked) { layers = v; validateLayers() } }"
-                  @update:layers-thicknesses="v => { if (!projectLocked) onUpdateLayerThicknesses(v) }"
-                />
                 
                 <v-alert v-if="radialError" type="warning" variant="tonal" class="mt-2 mb-3">
                   <strong>⚠ Advertencia:</strong> {{ radialErrorMsg }}
@@ -1040,7 +1260,16 @@ watch(layerCombination, (combo) => {
                       </v-chip>
                       <v-list dense class="mt-2">
                         <v-list-item v-for="(layer, idx) in layerCombination.layers" :key="idx" class="text-caption">
-                          Capa {{ idx + 1 }}: {{ layer.thickness }}mm × {{ layer.length }}mm × {{ layer.width }}mm
+                          <div
+                            class="layer-box"
+                            :style="{
+                              background: layerBoxFill(idx),
+                              borderColor: layerBoxBorder(idx)
+                            }"
+                          >
+                            <span class="layer-label">Capa {{ idx + 1 }}</span>
+                            <span class="layer-dims">{{ layer.thickness }}mm × {{ layer.length }}mm × {{ layer.width }}mm</span>
+                          </div>
                         </v-list-item>
                       </v-list>
                     </div>
@@ -1069,14 +1298,26 @@ watch(layerCombination, (combo) => {
                     <v-table density="compact">
                       <thead>
                         <tr>
+                          <th class="text-center">#</th>
                           <th>Material (mm)</th>
                           <th class="text-center">Capas</th>
                           <th class="text-center">Trapecios/Hoja</th>
+                          <th class="text-center">Trapecios Necesarios</th>
                           <th class="text-center">Hojas Requeridas</th>
                         </tr>
                       </thead>
                       <tbody>
                         <tr v-for="(item, idx) in cuttingBreakdown" :key="idx">
+                          <td class="text-center">
+                            <v-btn
+                              size="small"
+                              :variant="idx === selectedRecommendedIndex ? 'tonal' : 'outlined'"
+                              :color="idx === selectedRecommendedIndex ? 'primary' : undefined"
+                              @click="selectedRecommendedIndex = idx"
+                            >
+                              {{ idx + 1 }}
+                            </v-btn>
+                          </td>
                           <td>
                             <strong>{{ item.material.thickness }}</strong> × {{ item.material.length }} × {{ item.material.width }}
                           </td>
@@ -1084,6 +1325,7 @@ watch(layerCombination, (combo) => {
                             <v-chip size="small" color="primary">{{ item.layerCount }}</v-chip>
                           </td>
                           <td class="text-center">{{ item.trapezoidsPerSheet }}</td>
+                          <td class="text-center">{{ item.trapezoidsNeeded }}</td>
                           <td class="text-center">
                             <v-chip size="small" color="success">{{ item.sheetsRequired }}</v-chip>
                           </td>
@@ -1091,7 +1333,7 @@ watch(layerCombination, (combo) => {
                       </tbody>
                       <tfoot>
                         <tr class="font-weight-bold">
-                          <td colspan="3" class="text-right">Total de hojas:</td>
+                          <td colspan="5" class="text-right">Total de hojas:</td>
                           <td class="text-center">
                             <v-chip color="success">
                               {{ cuttingBreakdown.reduce((sum, item) => sum + item.sheetsRequired, 0) }}
@@ -1108,21 +1350,114 @@ watch(layerCombination, (combo) => {
                 <div v-if="recommendedCuttingLayouts.length > 0" class="mb-6">
                   <div class="text-subtitle-2 mb-3">Patrones por hojas estándar (recomendación)</div>
                   <v-row dense>
-                    <v-col
-                      v-for="(item, idx) in recommendedCuttingLayouts"
-                      :key="`rec-${idx}`"
-                      cols="12"
-                      md="6"
-                      lg="4"
-                    >
-                      <v-card variant="outlined" class="pa-2">
+                    <v-col cols="12">
+                      <v-card v-if="selectedRecommendedLayout" variant="outlined" class="pa-2">
                         <v-card-subtitle class="text-caption">
-                          {{ item.material.thickness }}mm × {{ item.material.length }}mm × {{ item.material.width }}mm
+                          #{{ selectedRecommendedIndex + 1 }} · {{ selectedRecommendedLayout.material.thickness }}mm × {{ selectedRecommendedLayout.material.length }}mm × {{ selectedRecommendedLayout.material.width }}mm
                         </v-card-subtitle>
                         <div class="text-caption mb-2">
-                          {{ item.trapsToRender }} de {{ item.trapezoidsPerSheet }} trapecios/hoja • {{ item.sheetsRequired }} hojas • {{ item.wastePercentage.toFixed(1) }}% desperdicio
+                          {{ selectedRecommendedLayout.trapsToRender }} de {{ selectedRecommendedLayout.trapezoidsPerSheet }} trapecios/hoja • {{ selectedRecommendedLayout.sheetsRequired }} hojas
+                        </div>
+                        <div class="text-caption mb-2">
+                          Utilización: {{ (selectedRecommendedOverallUtilization * 100).toFixed(1) }}%
+                        </div>
+                        <div v-if="selectedRecommendedHasPartial" class="text-caption mb-2">
+                          {{ selectedRecommendedFullSheets }} hoja(s) completas + 1 hoja parcial ({{ selectedRecommendedPartialTraps }} trapecios)
+                        </div>
+                        <div v-if="selectedRecommendedHasPartial" class="d-flex flex-wrap" style="gap:12px">
+                          <div>
+                            <div class="text-caption text-medium-emphasis mb-1">Hoja completa</div>
+                            <div class="text-caption mb-1">
+                              Utilización: {{ (selectedRecommendedFullUtilization * 100).toFixed(1) }}%
+                            </div>
+                            <svg
+                              :width="recommendedCanvasWidth"
+                              :height="recommendedCanvasHeight"
+                              style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px"
+                            >
+                              <rect
+                                :x="20"
+                                :y="20"
+                                :width="selectedRecommendedLayout.sheetScaledWidth"
+                                :height="selectedRecommendedLayout.sheetScaledHeight"
+                                fill="#ffffff"
+                                stroke="#64748b"
+                                stroke-width="2"
+                              />
+                              <g v-for="(trap, tIdx) in selectedRecommendedFullLayout ?? []" :key="`full-${tIdx}`">
+                                <polygon
+                                  :points="trap.points"
+                                  :fill="tIdx % 2 === 0 ? '#8ac29a70' : '#fbbf2470'"
+                                  :stroke="tIdx % 2 === 0 ? '#2d6a4f' : '#d97706'"
+                                  stroke-width="1.25"
+                                  stroke-dasharray="4 2"
+                                />
+                              </g>
+                              <rect
+                                :x="20"
+                                :y="20"
+                                :width="selectedRecommendedLayout.sheetScaledWidth"
+                                :height="selectedRecommendedLayout.sheetScaledHeight"
+                                fill="#ef444466"
+                                v-if="selectedRecommendedFullSheets === 0"
+                              />
+                            </svg>
+                            <div class="mt-2" v-if="selectedRecommendedHasPartial && selectedRecommendedFullSheets > 0">
+                              <v-btn
+                                color="primary"
+                                variant="tonal"
+                                size="small"
+                                prepend-icon="mdi-download"
+                                @click="exportRecommendedLayoutDxf('full')"
+                              >
+                                Exportar hoja completa (DXF)
+                              </v-btn>
+                            </div>
+                          </div>
+                          <div>
+                            <div class="text-caption text-medium-emphasis mb-1">Hoja parcial</div>
+                            <div class="text-caption mb-1">
+                              Utilización: {{ (selectedRecommendedPartialUtilization * 100).toFixed(1) }}%
+                            </div>
+                            <svg
+                              :width="recommendedCanvasWidth"
+                              :height="recommendedCanvasHeight"
+                              style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px"
+                            >
+                              <rect
+                                :x="20"
+                                :y="20"
+                                :width="selectedRecommendedLayout.sheetScaledWidth"
+                                :height="selectedRecommendedLayout.sheetScaledHeight"
+                                fill="#ffffff"
+                                stroke="#64748b"
+                                stroke-width="2"
+                              />
+                              <g v-for="(trap, tIdx) in selectedRecommendedPartialLayout ?? []" :key="`partial-${tIdx}`">
+                                <polygon
+                                  :points="trap.points"
+                                  :fill="tIdx % 2 === 0 ? '#8ac29a70' : '#fbbf2470'"
+                                  :stroke="tIdx % 2 === 0 ? '#2d6a4f' : '#d97706'"
+                                  stroke-width="1.25"
+                                  stroke-dasharray="4 2"
+                                />
+                              </g>
+                            </svg>
+                            <div class="mt-2" v-if="selectedRecommendedHasPartial">
+                              <v-btn
+                                color="primary"
+                                variant="tonal"
+                                size="small"
+                                prepend-icon="mdi-download"
+                                @click="exportRecommendedLayoutDxf('partial')"
+                              >
+                                Exportar hoja parcial (DXF)
+                              </v-btn>
+                            </div>
+                          </div>
                         </div>
                         <svg
+                          v-else
                           :width="recommendedCanvasWidth"
                           :height="recommendedCanvasHeight"
                           style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px"
@@ -1130,13 +1465,13 @@ watch(layerCombination, (combo) => {
                           <rect
                             :x="20"
                             :y="20"
-                            :width="item.sheetScaledWidth"
-                            :height="item.sheetScaledHeight"
+                            :width="selectedRecommendedLayout.sheetScaledWidth"
+                            :height="selectedRecommendedLayout.sheetScaledHeight"
                             fill="#ffffff"
                             stroke="#64748b"
                             stroke-width="2"
                           />
-                          <g v-for="(trap, tIdx) in item.layout" :key="tIdx">
+                          <g v-for="(trap, tIdx) in selectedRecommendedLayout.layout" :key="tIdx">
                             <polygon
                               :points="trap.points"
                               :fill="tIdx % 2 === 0 ? '#8ac29a70' : '#fbbf2470'"
@@ -1146,6 +1481,17 @@ watch(layerCombination, (combo) => {
                             />
                           </g>
                         </svg>
+                        <div class="mt-3" v-if="!selectedRecommendedHasPartial && selectedRecommendedFullSheets > 0">
+                          <v-btn
+                            color="primary"
+                            variant="tonal"
+                            size="small"
+                            prepend-icon="mdi-download"
+                            @click="exportRecommendedLayoutDxf('full')"
+                          >
+                            Exportar hoja completa (DXF)
+                          </v-btn>
+                        </div>
                       </v-card>
                     </v-col>
                   </v-row>
@@ -1220,8 +1566,8 @@ watch(layerCombination, (combo) => {
                     
                     <v-card variant="tonal" color="warning">
                       <v-card-text>
-                        <div class="text-h5 font-weight-bold">{{ wastePercentage.toFixed(1) }}%</div>
-                        <div class="text-caption">Desperdicio</div>
+                        <div class="text-h5 font-weight-bold">{{ utilizationPercentage.toFixed(1) }}%</div>
+                        <div class="text-caption">Utilización</div>
                       </v-card-text>
                     </v-card>
                     
@@ -1504,5 +1850,49 @@ watch(layerCombination, (combo) => {
   justify-content: center;
   align-items: center;
   padding: 1rem;
+}
+
+.design-visuals {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 16px;
+}
+
+@media (min-width: 1200px) {
+  .design-visuals {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+.design-visual-item {
+  min-width: 0;
+  width: 100%;
+}
+
+.design-preview-wrap {
+  overflow-x: auto;
+  display: flex;
+  justify-content: center;
+}
+
+.layer-box {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid #eef2f7;
+  border-radius: 6px;
+  box-shadow: 0 8px 20px rgba(31, 109, 143, 0.251);
+}
+
+.layer-label {
+  font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.85);
+}
+
+.layer-dims {
+  color: rgba(var(--v-theme-on-surface), 0.7);
 }
 </style>

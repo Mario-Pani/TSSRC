@@ -1,4 +1,4 @@
-import { computed, ref, Ref } from 'vue'
+import { computed, Ref } from 'vue'
 import type { TrapezoidDims } from '../utils/geometry'
 
 export interface TrapezoidPosition {
@@ -29,25 +29,68 @@ export function useNestingCalculations(
     return { width, height, effectiveWidth }
   })
 
+  function computeHorizontalPacking(materialLength: number, materialWidth: number) {
+    const d = dims.value
+    if (!d) return { trapsPerRow: 0, rows: 0, usedWidth: 0, pairs: 0, extra: 0, pairWidth: 0 }
+
+    const box = trapezoidBoundingBox.value
+    const heightWithKerf = box.height + kerf.value
+    const rows = Math.floor(materialWidth / heightWithKerf)
+
+    const pairWidth = box.effectiveWidth + kerf.value
+    const pairs = Math.floor(materialLength / pairWidth)
+
+    let trapsPerRow = pairs * 2
+    const remainingWidth = materialLength - (pairs * pairWidth)
+    const singleWidth = box.width + kerf.value
+    const extra = remainingWidth >= singleWidth ? 1 : 0
+    trapsPerRow += extra
+
+    const usedWidth = (pairs * pairWidth) + (extra ? singleWidth : 0)
+
+    return { trapsPerRow, rows, usedWidth, pairs, extra, pairWidth }
+  }
+
+  function computeVerticalPacking(materialLength: number, materialWidth: number, usedWidth: number) {
+    const d = dims.value
+    if (!d) return { columns: 0, rows: 0, traps: 0, stripWidth: 0, pairs: 0, extra: 0 }
+
+    const stripWidth = materialLength - usedWidth
+    if (stripWidth <= 0) return { columns: 0, rows: 0, traps: 0, stripWidth, pairs: 0, extra: 0 }
+
+    const columnWidth = d.h + kerf.value
+    const columns = Math.floor(stripWidth / columnWidth)
+    if (columns <= 0) return { columns: 0, rows: 0, traps: 0, stripWidth, pairs: 0, extra: 0 }
+
+    const reduction = (d.s_out - d.s_in) / 2
+    const effectiveHeight = 2 * d.s_out - reduction
+    const pairHeight = effectiveHeight + kerf.value
+    const pairs = Math.floor(materialWidth / pairHeight)
+
+    let rows = pairs * 2
+    const remainingHeight = materialWidth - (pairs * pairHeight)
+    const singleHeight = d.s_out + kerf.value
+    const extra = remainingHeight >= singleHeight ? 1 : 0
+    rows += extra
+
+    const traps = columns * rows
+
+    return { columns, rows, traps, stripWidth, pairs, extra }
+  }
+
   // Calcula trapecios por hoja para cualquier material
   function calculateTrapezoidsPerSheet(materialLength: number, materialWidth: number): number {
     const d = dims.value
     if (!d) return 0
-    
-    const box = trapezoidBoundingBox.value
-    const heightWithKerf = box.height + kerf.value
-    const pairWidth = box.effectiveWidth + kerf.value
-    const pairs = Math.floor(materialLength / pairWidth)
-    
-    let trapsPerRow = pairs * 2
-    const remainingWidth = materialLength - (pairs * pairWidth)
-    const singleWidth = box.width + kerf.value
-    if (remainingWidth >= singleWidth) {
-      trapsPerRow += 1
-    }
-    
-    const rows = Math.floor(materialWidth / heightWithKerf)
-    return trapsPerRow * rows
+
+    const horizontal = computeHorizontalPacking(materialLength, materialWidth)
+    const vertical = computeVerticalPacking(
+      materialLength,
+      materialWidth,
+      horizontal.usedWidth
+    )
+
+    return (horizontal.trapsPerRow * horizontal.rows) + vertical.traps
   }
 
   // Trapecios por la hoja actual
@@ -55,40 +98,6 @@ export function useNestingCalculations(
     return calculateTrapezoidsPerSheet(sheetLength.value, sheetWidth.value)
   })
 
-  // Calcula desperdicios para un material específico
-  function computeWastePercentageFor(
-    materialLength: number,
-    materialWidth: number,
-    trapsUsed?: number
-  ): number {
-    const d = dims.value
-    if (!d) return 0
-
-    const totalSheetArea = materialLength * materialWidth
-    const trapArea = ((d.s_in + d.s_out) / 2) * d.h
-    const trapsPerSheet = calculateTrapezoidsPerSheet(materialLength, materialWidth)
-    const effectiveTraps =
-      typeof trapsUsed === 'number'
-        ? Math.max(0, Math.min(trapsUsed, trapsPerSheet))
-        : trapsPerSheet
-    const usedArea = effectiveTraps * trapArea
-
-    return totalSheetArea > 0
-      ? ((totalSheetArea - usedArea) / totalSheetArea) * 100
-      : 0
-  }
-
-  // Desperdicios para la hoja actual
-  const wastePercentage = computed(() => {
-    const d = dims.value
-    if (!d) return 0
-    
-    const totalSheetArea = sheetLength.value * sheetWidth.value
-    const trapArea = ((d.s_in + d.s_out) / 2) * d.h
-    const usedArea = trapezoidsPerSheet.value * trapArea
-    
-    return ((totalSheetArea - usedArea) / totalSheetArea) * 100
-  })
 
   // Calcula escala de corte para canvas con dimensiones máximas
   function computeCuttingScaleFor(
@@ -123,11 +132,9 @@ export function useNestingCalculations(
     const h = d.h
 
     const heightWithKerf = h + kerf.value
-    const rows = Math.floor(materialWidth / heightWithKerf)
-
-    const box = trapezoidBoundingBox.value
-    const pairWidth = box.effectiveWidth + kerf.value
-    const pairs = Math.floor(materialLength / pairWidth)
+    const horizontal = computeHorizontalPacking(materialLength, materialWidth)
+    const rows = horizontal.rows
+    const pairs = horizontal.pairs
 
     const reduction = (s_out - s_in) / 2
 
@@ -173,8 +180,7 @@ export function useNestingCalculations(
       }
 
       // Trapecio adicional si cabe
-      const remainingWidth = materialLength - currentX
-      if (remainingWidth >= s_out + kerf.value) {
+      if (horizontal.extra) {
         const offsetLeft = (s_out - s_in) / 2
 
         const e1 = { x: currentX + offsetLeft, y: baseY }
@@ -192,15 +198,85 @@ export function useNestingCalculations(
       }
     }
 
+    const vertical = computeVerticalPacking(
+      materialLength,
+      materialWidth,
+      horizontal.usedWidth
+    )
+    if (vertical.traps > 0) {
+      const offsetLeft = (s_out - s_in) / 2
+      const columnWidth = h + kerf.value
+      const rowStep = s_out - reduction + kerf.value
+
+      for (let col = 0; col < vertical.columns; col++) {
+        const baseX = horizontal.usedWidth + col * columnWidth
+        let rowIndex = 0
+
+        for (let pair = 0; pair < vertical.pairs; pair++) {
+          for (let inPair = 0; inPair < 2; inPair++) {
+            const baseY = rowIndex * rowStep
+            const inverted = (col + rowIndex) % 2 === 1
+
+            const v1 = inverted
+              ? { x: baseX + 0, y: baseY + offsetLeft }
+              : { x: baseX + h, y: baseY + offsetLeft }
+            const v2 = inverted
+              ? { x: baseX + 0, y: baseY + offsetLeft + s_in }
+              : { x: baseX + h, y: baseY + offsetLeft + s_in }
+            const v3 = inverted
+              ? { x: baseX + h, y: baseY + s_out }
+              : { x: baseX + 0, y: baseY + s_out }
+            const v4 = inverted
+              ? { x: baseX + h, y: baseY + 0 }
+              : { x: baseX + 0, y: baseY + 0 }
+
+            traps.push({
+              points: `${offsetX + v1.x * scale},${offsetY + v1.y * scale} ${offsetX + v2.x * scale},${offsetY + v2.y * scale} ${offsetX + v3.x * scale},${offsetY + v3.y * scale} ${offsetX + v4.x * scale},${offsetY + v4.y * scale}`,
+              centerX: offsetX + (baseX + h / 2) * scale,
+              centerY: offsetY + (baseY + s_out / 2) * scale
+            })
+
+            if (typeof maxTraps === 'number' && traps.length >= maxTraps) return traps
+
+            rowIndex += 1
+          }
+        }
+
+        if (vertical.extra) {
+          const baseY = rowIndex * rowStep
+          const inverted = (col + rowIndex) % 2 === 1
+
+          const v1 = inverted
+            ? { x: baseX + 0, y: baseY + offsetLeft }
+            : { x: baseX + h, y: baseY + offsetLeft }
+          const v2 = inverted
+            ? { x: baseX + 0, y: baseY + offsetLeft + s_in }
+            : { x: baseX + h, y: baseY + offsetLeft + s_in }
+          const v3 = inverted
+            ? { x: baseX + h, y: baseY + s_out }
+            : { x: baseX + 0, y: baseY + s_out }
+          const v4 = inverted
+            ? { x: baseX + h, y: baseY + 0 }
+            : { x: baseX + 0, y: baseY + 0 }
+
+          traps.push({
+            points: `${offsetX + v1.x * scale},${offsetY + v1.y * scale} ${offsetX + v2.x * scale},${offsetY + v2.y * scale} ${offsetX + v3.x * scale},${offsetY + v3.y * scale} ${offsetX + v4.x * scale},${offsetY + v4.y * scale}`,
+            centerX: offsetX + (baseX + h / 2) * scale,
+            centerY: offsetY + (baseY + s_out / 2) * scale
+          })
+
+          if (typeof maxTraps === 'number' && traps.length >= maxTraps) return traps
+        }
+      }
+    }
+
     return traps
   }
 
   return {
     trapezoidBoundingBox,
     trapezoidsPerSheet,
-    wastePercentage,
     calculateTrapezoidsPerSheet,
-    computeWastePercentageFor,
     computeCuttingScaleFor,
     buildNestingLayout
   }

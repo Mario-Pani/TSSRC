@@ -9,6 +9,7 @@ const props = defineProps<{
   wheelStep?: number;
   layers?: number; // número de capas superpuestas
   layersEnabled?: boolean[]; // array con flags (true/false) para cada capa
+  layersColors?: Array<{ fill: string; stroke: string }>; // colores por capa
   layersThicknesses?: number[]; // espesores por capa (mm)
   layerAngleStepDeg?: number; // opcional: forzar paso angular por capa (grados)
 }>()
@@ -19,6 +20,7 @@ const emit = defineEmits<{
   (e:'update:show-guides', v:boolean): void
   (e: 'update:layers', v: number): void
   (e: 'update:layers-enabled', v: boolean[]): void
+  (e: 'update:layers-colors', v: Array<{ fill: string; stroke: string }>): void
   (e: 'update:layers-thicknesses', v: number[]): void
   (e: 'update:layer-angle-step-deg', v: number): void
 }>()
@@ -94,6 +96,22 @@ watch(() => props.layersEnabled, (v) => {
   }
 })
 
+watch(() => props.layersColors, (v) => {
+  if (Array.isArray(v)) {
+    localLayerColors.value = v.slice(0, localLayers.value).map((c) => ({
+      fill: extractHex(c.fill),
+      stroke: extractHex(c.stroke)
+    }))
+    while (localLayerColors.value.length < localLayers.value) {
+      const idx = localLayerColors.value.length
+      localLayerColors.value.push({
+        fill: extractHex(colors[idx % 2].fill),
+        stroke: extractHex(colors[idx % 2].stroke)
+      })
+    }
+  }
+})
+
 // Helper para extraer hex sin alpha (color picker solo acepta #RRGGBB)
 function extractHex(color: string): string {
   return color.length > 7 ? color.slice(0, 7) : color
@@ -101,10 +119,12 @@ function extractHex(color: string): string {
 
 // Colores personalizados por capa
 const localLayerColors = ref<Array<{ fill: string; stroke: string }>>(
-  Array.from({ length: localLayers.value }, (_, i) => ({
+  (props.layersColors ?? Array.from({ length: localLayers.value }, (_, i) => ({
     fill: extractHex(colors[i % 2].fill),
     stroke: extractHex(colors[i % 2].stroke)
-  }))
+  })))
+    .slice(0, localLayers.value)
+    .map((c) => ({ fill: extractHex(c.fill), stroke: extractHex(c.stroke) }))
 )
 
 const localShowGuides = ref<boolean>(props.showGuides ?? true)
@@ -122,6 +142,7 @@ watch(() => localLayers.value, (newCount) => {
     localLayerColors.value.push({ fill: extractHex(colors[idx % 2].fill), stroke: extractHex(colors[idx % 2].stroke) })
   }
   if (localLayerColors.value.length > newCount) localLayerColors.value.length = newCount
+  emit('update:layers-colors', localLayerColors.value.slice())
 })
 
 // Espesores por capa (mm)
@@ -202,6 +223,7 @@ function updateLayerColor(i:number, value:string){
   const idx = i - 1
   if (!localLayerColors.value[idx]) return
   localLayerColors.value[idx].fill = extractHex(value)
+  emit('update:layers-colors', localLayerColors.value.slice())
 }
 function toggleLayer(i:number){
   const idx = i - 1

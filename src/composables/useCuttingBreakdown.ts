@@ -24,7 +24,6 @@ export interface RecommendedLayout {
   sheetsRequired: number
   scale: number
   trapsToRender: number
-  wastePercentage: number
   sheetScaledWidth: number
   sheetScaledHeight: number
   layout: Array<{ points: string; centerX: number; centerY: number }>
@@ -36,7 +35,6 @@ export function useCuttingBreakdown(
   N: Ref<number>,
   ringCount: Ref<number>,
   calculateTrapezoidsPerSheet: (length: number, width: number) => number,
-  computeWastePercentageFor: (length: number, width: number, trapsUsed?: number) => number,
   computeCuttingScaleFor: (
     length: number,
     width: number,
@@ -107,11 +105,6 @@ export function useCuttingBreakdown(
         ...item,
         scale,
         trapsToRender,
-        wastePercentage: computeWastePercentageFor(
-          item.material.length,
-          item.material.width,
-          trapsToRender
-        ),
         sheetScaledWidth: item.material.length * scale,
         sheetScaledHeight: item.material.width * scale,
         layout: buildNestingLayout(
