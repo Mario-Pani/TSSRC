@@ -40,6 +40,7 @@ const ID = ref<number>(800)
 const OD = ref<number>(1000)
 const ringCount = ref<number>(6)
 const TH = ref<number>(12.9)
+const density = ref<number>(1.2)
 const layers = ref<number>(3)
 const defaultLayerColors = [
   { fill: '#8ac29a', stroke: '#8aa89a' },
@@ -434,7 +435,6 @@ function importProject(event: Event) {
 
       if (snapshot.inputs) {
         const inputs = snapshot.inputs
-        suppressRecommendation.value = true
         skipThicknessSync.value = true
 
         if (isFiniteNumber(inputs.ID)) ID.value = inputs.ID
@@ -594,53 +594,159 @@ function findBestLayerCombination(targetTH: number, layerCount: number): LayerCo
   return bestCombination
 }
 
-// Definir layerCombination DESPUÉS de definir findBestLayerCombination
-const layerCombination = computed(() => findBestLayerCombination(TH.value, layers.value))
+// ---- NUEVO: Optimizador Global de Rendimiento (Eficiencia) ----
+function findOptimalYieldCombination(targetTH: number, allowedVariance = 0.2): LayerCombination | null {
+  const inStockMaterials = materials.value.filter(m => m.inStock !== false)
+  if (inStockMaterials.length === 0 || !dims.value) return null
 
-// Sincronizar material de corte con material recomendado
-watch(layerCombination, (combo) => {
-  if (combo && combo.layers.length > 0) {
-    const firstLayer = combo.layers[0]
-    sheetLength.value = firstLayer.length
-    sheetWidth.value = firstLayer.width
+  // List of candidate combinations
+  const candidates: LayerCombination[] = []
+
+  // Test from 3 up to 8 layers
+  for (let numLayers = 3; numLayers <= 8; numLayers++) {
+    const pairCount = Math.floor(numLayers / 2)
+    const hasCenter = numLayers % 2 === 1
+    const targetPerLayer = targetTH / numLayers
     
-    // Encontrar el índice en materials
-    const idx = materials.value.findIndex(m => 
-      m.thickness === firstLayer.thickness && 
-      m.length === firstLayer.length && 
-      m.width === firstLayer.width
+    // Pick materials close to the theoretical per-layer thickness
+    const uniqueMats = uniqueMaterialsByThickness(inStockMaterials)
+    const candidateMats = pickClosestMaterials(uniqueMats, targetPerLayer, 8) // Consider up to 8 nearest thicknesses
+
+    const buildLayers = (pairThicknesses: Material[], center?: Material): Material[] => {
+      const left = pairThicknesses.map(p => p)
+      const right = [...pairThicknesses].reverse().map(p => p)
+      return hasCenter ? [...left, center!, ...right] : [...left, ...right]
+    }
+
+    const testCombination = (layersList: Material[]) => {
+      const total = layersList.reduce((sum, m) => sum + m.thickness, 0)
+      if (Math.abs(total - targetTH) <= allowedVariance) {
+        candidates.push({
+          layers: layersList,
+          totalThickness: total,
+          layerCount: numLayers
+        })
+      }
+    }
+
+    const recursePairs = (idx: number, current: Material[]) => {
+      if (idx === pairCount) {
+        if (hasCenter) {
+          for (const center of candidateMats) {
+            testCombination(buildLayers(current, center))
+          }
+        } else {
+          testCombination(buildLayers(current))
+        }
+        return
+      }
+      for (const mat of candidateMats) {
+        current.push(mat)
+        recursePairs(idx + 1, current)
+        current.pop()
+      }
+    }
+
+    recursePairs(0, [])
+  }
+
+  if (candidates.length === 0) return findBestLayerCombination(targetTH, layers.value)
+
+  // 2. Headless Simulation
+  let bestCandidate: LayerCombination | null = null
+  let maxScore = -Number.MAX_VALUE
+  let bestYieldRaw = 0
+
+  for (const combo of candidates) {
+    // Determine the optimal ring count N globally across all options
+    const ringN = pickNByOD(+OD.value)
+    
+    const { yieldPct, adhesiveWeightKg, ringWeightKg, materialWeightKg } = simulateGlobalYield(
+      dims.value,
+      combo.layers,
+      ringN,
+      ringCount.value,
+      density.value
     )
-    if (idx !== -1) {
-      selectedMaterialForCutting.value = idx
+
+    // Penalización matemática real por ensamble explícito en simulateGlobalYield:
+    // El rendimiento (yieldPct) ya divide el peso útil entre el material bruto + adhesivo.
+    const score = yieldPct
+
+    if (score > maxScore) {
+      maxScore = score
+      bestCandidate = combo
+      bestYieldRaw = yieldPct
+    } else if (Math.abs(score - maxScore) < 0.1) {
+      // Tie breaker: less layers is better to reduce assembly overhead
+      if (bestCandidate && combo.layerCount < bestCandidate.layerCount) {
+        maxScore = score
+        bestCandidate = combo
+        bestYieldRaw = yieldPct
+      }
     }
   }
-})
 
-// Materiales en stock para selector
-const inStockMaterials = computed(() => {
-  return materials.value
-    .map((m, index) => ({
-      index,
-      label: `${m.thickness}mm × ${m.length}mm × ${m.width}mm`,
-      ...m
-    }))
-    .filter(m => m.inStock !== false)
-})
+  // Add the winning raw yield pct to the candidate object to display it in the alert if needed.
+  if (bestCandidate) {
+    (bestCandidate as any).rawYield = bestYieldRaw
+  }
 
-// Actualizar dimensiones de hoja cuando se selecciona un material
-watch(selectedMaterialForCutting, (idx) => {
-  if (idx !== null && materials.value[idx]) {
-    const mat = materials.value[idx]
-    sheetLength.value = mat.length
-    sheetWidth.value = mat.width
+  return bestCandidate || findBestLayerCombination(targetTH, layers.value)
+}
+
+function autoOptimizeGlobalYield() {
+  if (projectLocked.value || !dims.value) return
+  
+  const best = findOptimalYieldCombination(TH.value, 0.2) // 0.2mm variance
+  if (best) {
+    layers.value = best.layerCount
+    layerThicknesses.value = best.layers.map(m => m.thickness)
+    
+    const projectedYield = (best as any).rawYield ?? globalCuttingStats.value.overallYieldPct
+    alert(`¡Optimización Exitosa!\nEficiencia proyectada: ${projectedYield.toFixed(1)}%\nSe configuraron ${best.layerCount} capas óptimas (minimizando complejidad).`)
+  } else {
+    alert("No se encontró una combinación válida o el stock es insuficiente.")
+  }
+}
+
+// Definir layerCombination como una proyección estructurada de layerThicknesses
+const layerCombination = computed<LayerCombination | null>(() => {
+  const thicknesses = layerThicknesses.value
+  if (!thicknesses || thicknesses.length === 0) return null
+
+  const targetLayers: Material[] = []
+  let totalThickness = 0
+  const inStockMaterials = materials.value.filter(m => m.inStock !== false)
+
+  for (const t of thicknesses) {
+    let stockItem = inStockMaterials.find(m => m.thickness === t)
+    if (!stockItem) stockItem = materials.value.find(m => m.thickness === t)
+    
+    if (stockItem) {
+      targetLayers.push(stockItem)
+    } else {
+      // Fallback fail-safe
+      targetLayers.push({
+        thickness: t,
+        length: 3200,
+        width: 2108,
+        inStock: true
+      })
+    }
+    totalThickness += t
+  }
+
+  return {
+    layers: targetLayers,
+    totalThickness,
+    layerCount: targetLayers.length
   }
 })
 
 // Refs para control de la hoja de corte
 const layerThicknesses = ref<number[]>(Array.from({ length: layers.value }, () => TH.value / layers.value))
 const skipThicknessSync = ref(false)
-const syncingRecommendation = ref(false)
-const suppressRecommendation = ref(false)
 
 // Zoom y Panel
 const scale = ref(0.22)
@@ -675,17 +781,17 @@ const A1 = computed(() => dims.value?.alphaDeg ?? 0)
 const N = computed(() => pickNByOD(+OD.value))
 const showGuides = ref(true)
 
-// Usar composables de cálculos
 const {
   trapezoidBoundingBox,
   trapezoidsPerSheet,
   calculateTrapezoidsPerSheet,
   computeCuttingScaleFor,
-  buildNestingLayout
+  buildNestingLayout,
+  calculateOffcuts
 } = useNestingCalculations(dims, sheetLength, sheetWidth, kerf)
 
 // Usar composable para breakdown de materiales (después de useNestingCalculations)
-const { cuttingBreakdown, recommendedCuttingLayouts } = useCuttingBreakdown(
+const { cuttingBreakdown, recommendedCuttingLayouts, globalCuttingStats, simulateGlobalYield } = useCuttingBreakdown(
   dims,
   layerCombination,
   N,
@@ -694,7 +800,9 @@ const { cuttingBreakdown, recommendedCuttingLayouts } = useCuttingBreakdown(
   computeCuttingScaleFor,
   buildNestingLayout,
   recommendedCanvasWidth,
-  recommendedCanvasHeight
+  recommendedCanvasHeight,
+  density,
+  calculateOffcuts
 )
 
 const selectedRecommendedIndex = ref(0)
@@ -843,17 +951,6 @@ function exportRecommendedLayoutDxf(target: 'full' | 'partial' | 'single') {
   link.click()
   URL.revokeObjectURL(url)
 }
-
-watch(() => recommendedCuttingLayouts.value, (layouts) => {
-  if (!layouts.length) {
-    selectedRecommendedIndex.value = 0
-    return
-  }
-  if (selectedRecommendedIndex.value >= layouts.length) {
-    selectedRecommendedIndex.value = 0
-  }
-})
-
 // Escala para dibujar la hoja en el canvas
 const cuttingScale = computed(() => {
   return computeCuttingScaleFor(sheetLength.value, sheetWidth.value, canvasWidth, canvasHeight)
@@ -867,9 +964,12 @@ const sheetScaledHeight = computed(() => {
   return sheetWidth.value * cuttingScale.value
 })
 
-// Layout de nesting - generar posiciones de trapecios alternados horizontalmente
 const nestingLayout = computed(() => {
   return buildNestingLayout(sheetLength.value, sheetWidth.value, cuttingScale.value)
+})
+
+const detailedOffcuts = computed(() => {
+  return calculateOffcuts(nestingLayout.value, sheetLength.value, sheetWidth.value, 1, 0, 0)
 })
 
 const utilizationPercentage = computed(() => {
@@ -1010,8 +1110,6 @@ function onUpdateLayerThicknesses(v: number[]) {
   if (!sameNumberArray(normalized, layerThicknesses.value)) {
     layerThicknesses.value = normalized
   }
-
-  suppressRecommendation.value = true
 }
 
 function sameNumberArray(a: number[], b: number[]) {
@@ -1022,20 +1120,17 @@ function sameNumberArray(a: number[], b: number[]) {
   return true
 }
 
-watch(layerCombination, (combo) => {
-  if (!combo) return
-  if (suppressRecommendation.value) {
-    suppressRecommendation.value = false
-    return
+// Watchers de TH y capas para auto-sugerir una combinación base cuando el diseño primario cambia
+watch([TH, layers], () => {
+  if (skipThicknessSync.value) return
+  
+  const recommended = findBestLayerCombination(TH.value, layers.value)
+  if (recommended) {
+    const recommendedThicknesses = recommended.layers.map(m => m.thickness)
+    if (!sameNumberArray(recommendedThicknesses, layerThicknesses.value)) {
+      layerThicknesses.value = recommendedThicknesses
+    }
   }
-  const recommended = combo.layers.map(m => m.thickness)
-
-  if (!sameNumberArray(recommended, layerThicknesses.value)) {
-    syncingRecommendation.value = true
-    layerThicknesses.value = recommended
-  }
-
-  if (syncingRecommendation.value) syncingRecommendation.value = false
 })
 </script>
 
@@ -1138,6 +1233,15 @@ watch(layerCombination, (combo) => {
                 <v-row class="ga-4">
                   <v-col cols="12" sm="6" md="4" lg="2">
                     <v-text-field
+                      v-model.number="density"
+                      type="number" step="0.01" min="0.1"
+                      label="Densidad (g/cm³)"
+                      variant="outlined" density="comfortable"
+                      :disabled="projectLocked"
+                    />
+                  </v-col>
+                  <v-col cols="12" sm="6" md="4" lg="2">
+                    <v-text-field
                       v-model.number="ID"
                       type="number" min="1" step="1"
                       label="ID (mm)" variant="outlined" density="comfortable"
@@ -1178,6 +1282,32 @@ watch(layerCombination, (combo) => {
                       :error-messages="thErrorMsg"
                       @blur="validateTH"
                     />
+                  </v-col>
+                  <v-col cols="12" sm="6" md="4" lg="2" class="d-flex align-center gap-2">
+                    <v-text-field
+                      v-model.number="layers"
+                      type="number" min="3" step="1"
+                      label="Capas" variant="outlined" density="comfortable"
+                      :disabled="projectLocked"
+                      :error="layersError"
+                      :error-messages="layersErrorMsg"
+                      @blur="validateLayers"
+                      style="flex: 1"
+                    />
+                    <v-tooltip text="Auto-Optimizar Eficiencia" location="top">
+                      <template #activator="{ props }">
+                         <v-btn
+                            color="amber-darken-3"
+                            variant="flat"
+                            height="44"
+                            class="text-white mb-5"
+                            icon="mdi-auto-fix"
+                            :disabled="projectLocked"
+                            v-bind="props"
+                            @click="autoOptimizeGlobalYield()"
+                          />
+                      </template>
+                    </v-tooltip>
                   </v-col>
                   <v-col cols="12" sm="6" md="4" lg="2">
                     <v-text-field
@@ -1289,6 +1419,38 @@ watch(layerCombination, (combo) => {
             <v-card elevation="3">
               <v-card-title class="text-h6">Optimización de Corte</v-card-title>
               <v-card-text>
+                <!-- Resumen Global -->
+                <v-row v-if="cuttingBreakdown.length > 0" dense class="mb-4">
+                  <v-col cols="12">
+                    <v-alert type="info" variant="tonal" class="mb-4 d-flex align-center">
+                      <div class="d-flex w-100 justify-space-between align-center flex-wrap gap-4">
+                        <div>
+                          <div class="text-subtitle-2 border-b pb-1 mb-1">Impacto Global de Material</div>
+                          <div class="text-caption">Cálculos basados en densidad configurada ({{ density }} g/cm³) para <strong>{{ ringCount }} anillos</strong>.</div>
+                        </div>
+                        <div class="d-flex gap-2">
+                          <v-chip color="primary" variant="flat">
+                            <v-icon start>mdi-weight-kilogram</v-icon>
+                            Anillos: {{ globalCuttingStats.totalRingWeight.toFixed(2) }} kg
+                          </v-chip>
+                          <v-chip color="blue-grey" variant="flat">
+                            <v-icon start>mdi-cube-outline</v-icon>
+                            Bruto: {{ globalCuttingStats.totalMaterialWeight.toFixed(2) }} kg
+                          </v-chip>
+                          <v-chip color="brown" variant="flat">
+                            <v-icon start>mdi-glue</v-icon>
+                            Adhesivo: {{ globalCuttingStats.totalAdhesiveWeight.toFixed(2) }} kg
+                          </v-chip>
+                          <v-chip :color="globalCuttingStats.overallYieldPct >= 60 ? 'success' : 'warning'" variant="flat">
+                            <v-icon start>mdi-percent</v-icon>
+                            Eficiencia: {{ globalCuttingStats.overallYieldPct.toFixed(1) }}%
+                          </v-chip>
+                        </div>
+                      </div>
+                    </v-alert>
+                  </v-col>
+                </v-row>
+
                 <!-- Desglose de materiales por capas -->
                 <v-row v-if="cuttingBreakdown.length > 0" dense class="mb-4">
                   <v-col cols="12">
@@ -1358,8 +1520,10 @@ watch(layerCombination, (combo) => {
                         <div class="text-caption mb-2">
                           {{ selectedRecommendedLayout.trapsToRender }} de {{ selectedRecommendedLayout.trapezoidsPerSheet }} trapecios/hoja • {{ selectedRecommendedLayout.sheetsRequired }} hojas
                         </div>
-                        <div class="text-caption mb-2">
-                          Utilización: {{ (selectedRecommendedOverallUtilization * 100).toFixed(1) }}%
+                        <div class="d-flex flex-wrap gap-2 my-2">
+                          <v-chip size="small" color="primary" variant="outlined">
+                            Capa {{ selectedRecommendedIndex + 1 }}: {{ selectedRecommendedLayout.trapezoidsNeeded }} trapecios de tamaño {{ selectedRecommendedLayout.material.thickness }}mm
+                          </v-chip>
                         </div>
                         <div v-if="selectedRecommendedHasPartial" class="text-caption mb-2">
                           {{ selectedRecommendedFullSheets }} hoja(s) completas + 1 hoja parcial ({{ selectedRecommendedPartialTraps }} trapecios)
@@ -1367,8 +1531,10 @@ watch(layerCombination, (combo) => {
                         <div v-if="selectedRecommendedHasPartial" class="d-flex flex-wrap" style="gap:12px">
                           <div>
                             <div class="text-caption text-medium-emphasis mb-1">Hoja completa</div>
-                            <div class="text-caption mb-1">
-                              Utilización: {{ (selectedRecommendedFullUtilization * 100).toFixed(1) }}%
+                            <div class="text-caption mb-1 pb-1 border-b">
+                              <span class="text-success font-weight-bold">Utilizado: {{ selectedRecommendedLayout.fullSheetStats?.utilizedPct.toFixed(1) ?? 0 }}%</span> |
+                              <span class="text-error">Recorte: {{ selectedRecommendedLayout.fullSheetStats?.offcutPct.toFixed(1) ?? 0 }}%</span> |
+                              <span class="text-warning">Scrap: {{ selectedRecommendedLayout.fullSheetStats?.scrapPct.toFixed(1) ?? 0 }}%</span>
                             </div>
                             <svg
                               :width="recommendedCanvasWidth"
@@ -1383,6 +1549,14 @@ watch(layerCombination, (combo) => {
                                 fill="#ffffff"
                                 stroke="#64748b"
                                 stroke-width="2"
+                              />
+                              <polygon
+                                v-if="selectedRecommendedLayout.fullSheetStats?.offcutPolygon"
+                                :points="selectedRecommendedLayout.fullSheetStats.offcutPolygon.points"
+                                fill="#ef444433"
+                                stroke="#ef4444"
+                                stroke-width="1.5"
+                                stroke-dasharray="3 3"
                               />
                               <g v-for="(trap, tIdx) in selectedRecommendedFullLayout ?? []" :key="`full-${tIdx}`">
                                 <polygon
@@ -1416,8 +1590,10 @@ watch(layerCombination, (combo) => {
                           </div>
                           <div>
                             <div class="text-caption text-medium-emphasis mb-1">Hoja parcial</div>
-                            <div class="text-caption mb-1">
-                              Utilización: {{ (selectedRecommendedPartialUtilization * 100).toFixed(1) }}%
+                            <div class="text-caption mb-1 pb-1 border-b">
+                              <span class="text-success font-weight-bold">Utilizado: {{ selectedRecommendedLayout.partialSheetStats?.utilizedPct.toFixed(1) ?? 0 }}%</span> |
+                              <span class="text-error">Recorte: {{ selectedRecommendedLayout.partialSheetStats?.offcutPct.toFixed(1) ?? 0 }}%</span> |
+                              <span class="text-warning">Scrap: {{ selectedRecommendedLayout.partialSheetStats?.scrapPct.toFixed(1) ?? 0 }}%</span>
                             </div>
                             <svg
                               :width="recommendedCanvasWidth"
@@ -1432,6 +1608,14 @@ watch(layerCombination, (combo) => {
                                 fill="#ffffff"
                                 stroke="#64748b"
                                 stroke-width="2"
+                              />
+                              <polygon
+                                v-if="selectedRecommendedLayout.partialSheetStats?.offcutPolygon"
+                                :points="selectedRecommendedLayout.partialSheetStats.offcutPolygon.points"
+                                fill="#ef444433"
+                                stroke="#ef4444"
+                                stroke-width="1.5"
+                                stroke-dasharray="3 3"
                               />
                               <g v-for="(trap, tIdx) in selectedRecommendedPartialLayout ?? []" :key="`partial-${tIdx}`">
                                 <polygon
@@ -1471,6 +1655,14 @@ watch(layerCombination, (combo) => {
                             stroke="#64748b"
                             stroke-width="2"
                           />
+                          <polygon
+                            v-if="selectedRecommendedLayout.fullSheetStats?.offcutPolygon"
+                            :points="selectedRecommendedLayout.fullSheetStats.offcutPolygon.points"
+                            fill="#ef444433"
+                            stroke="#ef4444"
+                            stroke-width="1.5"
+                            stroke-dasharray="3 3"
+                          />
                           <g v-for="(trap, tIdx) in selectedRecommendedLayout.layout" :key="tIdx">
                             <polygon
                               :points="trap.points"
@@ -1497,22 +1689,14 @@ watch(layerCombination, (combo) => {
                   </v-row>
                 </div>
                 
-                <div class="text-subtitle-2 mb-3">Visualización Detallada (Opcional)</div>
+                <v-divider class="my-6"></v-divider>
+                <div class="text-subtitle-2 mb-3">Validación de Recortes Manuales (Inventario Bodega)</div>
+                <div class="text-caption mb-3">
+                  Introduce las medidas de un recorte que tengas en piso para validar cuántas piezas caben en él antes de empezar una hoja nueva completa.
+                </div>
                 
                 <v-row dense>
                   <v-col cols="12" md="4">
-                    <v-select
-                      v-model="selectedMaterialForCutting"
-                      :items="inStockMaterials"
-                      item-title="label"
-                      item-value="index"
-                      label="Material para visualizar"
-                      hint="Selecciona para ver el patrón de corte en detalle"
-                      persistent-hint
-                      variant="outlined"
-                      density="comfortable"
-                      :disabled="projectLocked"
-                    />
                     <v-text-field
                       v-model.number="sheetLength"
                       type="number"
@@ -1600,6 +1784,16 @@ watch(layerCombination, (combo) => {
                           fill="#ffffff"
                           stroke="#64748b"
                           stroke-width="2"
+                        />
+                        
+                        <!-- Recortes resultantes -->
+                        <polygon
+                          v-if="detailedOffcuts"
+                          :points="detailedOffcuts.points"
+                          fill="#ef444433"
+                          stroke="#ef4444"
+                          stroke-width="1.5"
+                          stroke-dasharray="3 3"
                         />
                         
                         <!-- Trapecios anidados con alternancia visible -->

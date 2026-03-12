@@ -116,7 +116,7 @@ export function computeDims(ID: number, OD: number, coeff = 1.0): TrapezoidDims 
 export const computeDimsMemo = createMemoizer(
   (ID: number, OD: number, coeff = 1.0) => computeDims(ID, OD, coeff),
   6,
-  (args) => `${args[0]}|${args[1]}|${args[2] ?? 1}`
+  (args: any[]) => `${args[0]}|${args[1]}|${args[2] ?? 1}`
 )
 
 export interface XY { x: number; y: number; }

@@ -7,99 +7,248 @@ export interface TrapezoidPosition {
   centerY: number
 }
 
+export interface OffcutPolygon {
+  points: string;
+  originalPoints: {x: number; y: number}[];
+  area: number;
+}
+
+// Interfaz interna para resultados de empacado
+export interface PackingStrategyResult {
+  name: string
+  trapsPerSheet: number
+  layoutBuilder: (
+    materialLength: number,
+    materialWidth: number,
+    scale: number,
+    offsetX: number,
+    offsetY: number,
+    maxTraps?: number
+  ) => TrapezoidPosition[]
+}
+
 export function useNestingCalculations(
   dims: Ref<TrapezoidDims | null>,
   sheetLength: Ref<number>,
   sheetWidth: Ref<number>,
   kerf: Ref<number>
 ) {
-  // Cálculo del bounding box del trapecio
+  // Cálculo de caja delimitadora
   const trapezoidBoundingBox = computed(() => {
     const d = dims.value
     if (!d) return { width: 0, height: 0, effectiveWidth: 0 }
-    
     const width = d.s_out
     const height = d.h
-    
-    // Cuando dos trapecios se alternan horizontalmente (normal + invertido al lado),
-    // el ancho efectivo del par se reduce porque encajan las caras inclinadas
     const reduction = (d.s_out - d.s_in) / 2
     const effectiveWidth = 2 * width - reduction
-    
     return { width, height, effectiveWidth }
   })
 
-  function computeHorizontalPacking(materialLength: number, materialWidth: number) {
+  // ---------------------------------------------------------
+  // ESTRATEGIA 1: Empacado Alternado Estandar (Horizontal)
+  // Calcula agrupaciones pares a lo largo del "Longitud" de la hoja
+  // ---------------------------------------------------------
+  function strategyAlternatingHorizontal(length: number, width: number): PackingStrategyResult {
     const d = dims.value
-    if (!d) return { trapsPerRow: 0, rows: 0, usedWidth: 0, pairs: 0, extra: 0, pairWidth: 0 }
+    if (!d) return { name: 'AlternatingH', trapsPerSheet: 0, layoutBuilder: () => [] }
 
     const box = trapezoidBoundingBox.value
-    const heightWithKerf = box.height + kerf.value
-    const rows = Math.floor(materialWidth / heightWithKerf)
+    const hKerf = box.height + kerf.value
+    const rows = Math.floor(width / hKerf)
+    if (rows <= 0) return { name: 'AlternatingH', trapsPerSheet: 0, layoutBuilder: () => [] }
 
     const pairWidth = box.effectiveWidth + kerf.value
-    const pairs = Math.floor(materialLength / pairWidth)
-
+    const pairs = Math.floor(length / pairWidth)
     let trapsPerRow = pairs * 2
-    const remainingWidth = materialLength - (pairs * pairWidth)
+    
+    const remainingWidth = length - (pairs * pairWidth)
     const singleWidth = box.width + kerf.value
     const extra = remainingWidth >= singleWidth ? 1 : 0
     trapsPerRow += extra
-
     const usedWidth = (pairs * pairWidth) + (extra ? singleWidth : 0)
 
-    return { trapsPerRow, rows, usedWidth, pairs, extra, pairWidth }
+    // Aprovechar sobrante vertical
+    const stripWidth = length - usedWidth
+    let vColumns = 0, vRows = 0, vPairs = 0, vExtra = 0
+    
+    if (stripWidth > 0 && Math.floor(stripWidth / hKerf) > 0) {
+      vColumns = Math.floor(stripWidth / hKerf)
+      const reduction = (d.s_out - d.s_in) / 2
+      const effectiveHeight = 2 * d.s_out - reduction
+      const pairHeight = effectiveHeight + kerf.value
+      
+      vPairs = Math.floor(width / pairHeight)
+      vRows = vPairs * 2
+      
+      const remainingHeight = width - (vPairs * pairHeight)
+      vExtra = remainingHeight >= (d.s_out + kerf.value) ? 1 : 0
+      vRows += vExtra
+    }
+    const verticalTraps = vColumns * vRows
+
+    const totalTraps = (trapsPerRow * rows) + verticalTraps
+
+    return {
+      name: 'AlternatingH',
+      trapsPerSheet: totalTraps,
+      layoutBuilder: (matL, matW, scale, offX, offY, maxTraps) => {
+        const traps: TrapezoidPosition[] = []
+        const s_in = d.s_in, s_out = d.s_out, h = d.h
+        const reduction = (s_out - s_in) / 2
+
+        // Filas Horizontales
+        for (let row = 0; row < rows; row++) {
+          const baseY = row * hKerf
+          let currentX = 0
+          for (let pair = 0; pair < pairs; pair++) {
+            // Normal
+            const offsetLeft = (s_out - s_in) / 2
+            let p1 = { x: currentX + offsetLeft, y: baseY }
+            let p2 = { x: currentX + offsetLeft + s_in, y: baseY }
+            let p3 = { x: currentX + s_out, y: baseY + h }
+            let p4 = { x: currentX, y: baseY + h }
+            traps.push({
+              points: `${offX + p1.x * scale},${offY + p1.y * scale} ${offX + p2.x * scale},${offY + p2.y * scale} ${offX + p3.x * scale},${offY + p3.y * scale} ${offX + p4.x * scale},${offY + p4.y * scale}`,
+              centerX: offX + (currentX + s_out / 2) * scale,
+              centerY: offY + (baseY + h / 2) * scale
+            })
+            if (typeof maxTraps === 'number' && traps.length >= maxTraps) return traps
+            currentX += s_out - reduction + kerf.value
+
+            // Invertida
+            p1 = { x: currentX, y: baseY }
+            p2 = { x: currentX + s_out, y: baseY }
+            p3 = { x: currentX + offsetLeft + s_in, y: baseY + h }
+            p4 = { x: currentX + offsetLeft, y: baseY + h }
+            traps.push({
+              points: `${offX + p1.x * scale},${offY + p1.y * scale} ${offX + p2.x * scale},${offY + p2.y * scale} ${offX + p3.x * scale},${offY + p3.y * scale} ${offX + p4.x * scale},${offY + p4.y * scale}`,
+              centerX: offX + (currentX + s_out / 2) * scale,
+              centerY: offY + (baseY + h / 2) * scale
+            })
+            if (typeof maxTraps === 'number' && traps.length >= maxTraps) return traps
+            currentX += s_out - reduction + kerf.value
+          }
+          if (extra) {
+            const offsetLeft = (s_out - s_in) / 2
+            let p1 = { x: currentX + offsetLeft, y: baseY }
+            let p2 = { x: currentX + offsetLeft + s_in, y: baseY }
+            let p3 = { x: currentX + s_out, y: baseY + h }
+            let p4 = { x: currentX, y: baseY + h }
+            traps.push({
+              points: `${offX + p1.x * scale},${offY + p1.y * scale} ${offX + p2.x * scale},${offY + p2.y * scale} ${offX + p3.x * scale},${offY + p3.y * scale} ${offX + p4.x * scale},${offY + p4.y * scale}`,
+              centerX: offX + (currentX + s_out / 2) * scale,
+              centerY: offY + (baseY + h / 2) * scale
+            })
+            if (typeof maxTraps === 'number' && traps.length >= maxTraps) return traps
+          }
+        }
+
+        // Columnas Verticales (Sobrante)
+        if (vColumns > 0 && vRows > 0) {
+          const offsetLeft = (s_out - s_in) / 2
+          const rowStep = s_out - reduction + kerf.value
+          for (let col = 0; col < vColumns; col++) {
+            const baseX = usedWidth + col * hKerf
+            let rowIndex = 0
+            for (let pair = 0; pair < vPairs; pair++) {
+              for (let inPair = 0; inPair < 2; inPair++) {
+                const baseY = rowIndex * rowStep
+                const inverted = (col + rowIndex) % 2 === 1
+                const v1 = inverted ? { x: baseX, y: baseY + offsetLeft } : { x: baseX + h, y: baseY + offsetLeft }
+                const v2 = inverted ? { x: baseX, y: baseY + offsetLeft + s_in } : { x: baseX + h, y: baseY + offsetLeft + s_in }
+                const v3 = inverted ? { x: baseX + h, y: baseY + s_out } : { x: baseX, y: baseY + s_out }
+                const v4 = inverted ? { x: baseX + h, y: baseY } : { x: baseX, y: baseY }
+                traps.push({
+                  points: `${offX + v1.x * scale},${offY + v1.y * scale} ${offX + v2.x * scale},${offY + v2.y * scale} ${offX + v3.x * scale},${offY + v3.y * scale} ${offX + v4.x * scale},${offY + v4.y * scale}`,
+                  centerX: offX + (baseX + h / 2) * scale,
+                  centerY: offY + (baseY + s_out / 2) * scale
+                })
+                if (typeof maxTraps === 'number' && traps.length >= maxTraps) return traps
+                rowIndex++
+              }
+            }
+            if (vExtra) {
+              const baseY = rowIndex * rowStep
+              const inverted = (col + rowIndex) % 2 === 1
+              const v1 = inverted ? { x: baseX, y: baseY + offsetLeft } : { x: baseX + h, y: baseY + offsetLeft }
+              const v2 = inverted ? { x: baseX, y: baseY + offsetLeft + s_in } : { x: baseX + h, y: baseY + offsetLeft + s_in }
+              const v3 = inverted ? { x: baseX + h, y: baseY + s_out } : { x: baseX, y: baseY + s_out }
+              const v4 = inverted ? { x: baseX + h, y: baseY } : { x: baseX, y: baseY }
+              traps.push({
+                points: `${offX + v1.x * scale},${offY + v1.y * scale} ${offX + v2.x * scale},${offY + v2.y * scale} ${offX + v3.x * scale},${offY + v3.y * scale} ${offX + v4.x * scale},${offY + v4.y * scale}`,
+                centerX: offX + (baseX + h / 2) * scale,
+                centerY: offY + (baseY + s_out / 2) * scale
+              })
+              if (typeof maxTraps === 'number' && traps.length >= maxTraps) return traps
+            }
+          }
+        }
+        return traps
+      }
+    }
   }
 
-  function computeVerticalPacking(materialLength: number, materialWidth: number, usedWidth: number) {
-    const d = dims.value
-    if (!d) return { columns: 0, rows: 0, traps: 0, stripWidth: 0, pairs: 0, extra: 0 }
+  // ---------------------------------------------------------
+  // EVALUADOR PRINCIPAL: Elige la estrategia de mayor capacidad
+  // Evalúa el material Normal y Material "Rotado" (swap L y W)
+  // ---------------------------------------------------------
+  function getOptimalStrategy(length: number, width: number): PackingStrategyResult {
+    let best: PackingStrategyResult = { name: 'None', trapsPerSheet: 0, layoutBuilder: () => [] }
+    if (!dims.value) return best
 
-    const stripWidth = materialLength - usedWidth
-    if (stripWidth <= 0) return { columns: 0, rows: 0, traps: 0, stripWidth, pairs: 0, extra: 0 }
+    // Ejecutar Estrategia Horizontal Normal
+    const sH_Norm = strategyAlternatingHorizontal(length, width)
+    if (sH_Norm.trapsPerSheet > best.trapsPerSheet) best = sH_Norm
 
-    const columnWidth = d.h + kerf.value
-    const columns = Math.floor(stripWidth / columnWidth)
-    if (columns <= 0) return { columns: 0, rows: 0, traps: 0, stripWidth, pairs: 0, extra: 0 }
+    // Ejecutar Estrategia Horizontal "Rotada" (Intercambio de ejes lógicos de hoja)
+    // El "Ancho" material pasa a ser la altura disponible, y viceversa
+    const sH_Rot = strategyAlternatingHorizontal(width, length)
+    if (sH_Rot.trapsPerSheet > best.trapsPerSheet) {
+      best = {
+        name: 'AlternatingH_Rotated90',
+        trapsPerSheet: sH_Rot.trapsPerSheet,
+        layoutBuilder: (matL, matW, scale, offX, offY, maxTraps) => {
+          // Genera el layout usando matW como longitud y matL como ancho
+          // Luego rota las coordenadas 90 grados alrededor del origen para que cuadre en el render
+          const rawTraps = sH_Rot.layoutBuilder(matW, matL, scale, 0, 0, maxTraps)
+          return rawTraps.map(trap => {
+            // El layoutbuilder rotado asume una hoja de (matW x matL) local
+            // Para dibujar en nuestro matL x matW global:
+            // Un punto (x,y) rota a (y, matW - x) [o similar dependiendo del origen SVG]
+            // Ya que SVG Y crece hacia abajo, para rotar +90: X_new = Y_old, Y_new = matW*scale - X_old
+            const pointsStr = trap.points.split(' ').map(pt => {
+              const [px, py] = pt.split(',').map(Number)
+              const newX = offX + py
+              const newY = offY + (matW * scale) - px
+              return `${newX},${newY}`
+            }).join(' ')
+            
+            // Centros
+            const oldCX = trap.centerX
+            const oldCY = trap.centerY
+            const newCX = offX + oldCY
+            const newCY = offY + (matW * scale) - oldCX
+            
+            return { points: pointsStr, centerX: newCX, centerY: newCY }
+          })
+        }
+      }
+    }
 
-    const reduction = (d.s_out - d.s_in) / 2
-    const effectiveHeight = 2 * d.s_out - reduction
-    const pairHeight = effectiveHeight + kerf.value
-    const pairs = Math.floor(materialWidth / pairHeight)
-
-    let rows = pairs * 2
-    const remainingHeight = materialWidth - (pairs * pairHeight)
-    const singleHeight = d.s_out + kerf.value
-    const extra = remainingHeight >= singleHeight ? 1 : 0
-    rows += extra
-
-    const traps = columns * rows
-
-    return { columns, rows, traps, stripWidth, pairs, extra }
+    return best
   }
 
-  // Calcula trapecios por hoja para cualquier material
+  // ---------------------------------------------------------
+  // INTERFAZ EXTERNA
+  // ---------------------------------------------------------
   function calculateTrapezoidsPerSheet(materialLength: number, materialWidth: number): number {
-    const d = dims.value
-    if (!d) return 0
-
-    const horizontal = computeHorizontalPacking(materialLength, materialWidth)
-    const vertical = computeVerticalPacking(
-      materialLength,
-      materialWidth,
-      horizontal.usedWidth
-    )
-
-    return (horizontal.trapsPerRow * horizontal.rows) + vertical.traps
+    return getOptimalStrategy(materialLength, materialWidth).trapsPerSheet
   }
 
-  // Trapecios por la hoja actual
   const trapezoidsPerSheet = computed(() => {
-    return calculateTrapezoidsPerSheet(sheetLength.value, sheetWidth.value)
+    return getOptimalStrategy(sheetLength.value, sheetWidth.value).trapsPerSheet
   })
 
-
-  // Calcula escala de corte para canvas con dimensiones máximas
   function computeCuttingScaleFor(
     length: number,
     width: number,
@@ -113,164 +262,115 @@ export function useNestingCalculations(
     return Math.min(scaleW, scaleH)
   }
 
-  // Construye layout de nesting con alternancia horizontal
   function buildNestingLayout(
     materialLength: number,
     materialWidth: number,
     scale: number,
     maxTraps?: number
   ): TrapezoidPosition[] {
-    const d = dims.value
-    if (!d) return []
-
-    const traps: TrapezoidPosition[] = []
+    const strategy = getOptimalStrategy(materialLength, materialWidth)
+    // Offsets base:
     const offsetX = 20
     const offsetY = 20
 
-    const s_in = d.s_in
-    const s_out = d.s_out
-    const h = d.h
+    if (strategy.trapsPerSheet === 0) return []
+    
+    // Evaluará la función lambda ganadora
+    return strategy.layoutBuilder(materialLength, materialWidth, scale, offsetX, offsetY, maxTraps)
+  }
 
-    const heightWithKerf = h + kerf.value
-    const horizontal = computeHorizontalPacking(materialLength, materialWidth)
-    const rows = horizontal.rows
-    const pairs = horizontal.pairs
-
-    const reduction = (s_out - s_in) / 2
-
-    for (let row = 0; row < rows; row++) {
-      const baseY = row * heightWithKerf
-      let currentX = 0
-
-      // Pares alternados en la misma fila
-      for (let pair = 0; pair < pairs; pair++) {
-        // Trapecio NORMAL (base ancha abajo)
-        const offsetLeft = (s_out - s_in) / 2
-
-        const n1 = { x: currentX + offsetLeft, y: baseY }
-        const n2 = { x: currentX + offsetLeft + s_in, y: baseY }
-        const n3 = { x: currentX + s_out, y: baseY + h }
-        const n4 = { x: currentX, y: baseY + h }
-
-        traps.push({
-          points: `${offsetX + n1.x * scale},${offsetY + n1.y * scale} ${offsetX + n2.x * scale},${offsetY + n2.y * scale} ${offsetX + n3.x * scale},${offsetY + n3.y * scale} ${offsetX + n4.x * scale},${offsetY + n4.y * scale}`,
-          centerX: offsetX + (currentX + s_out / 2) * scale,
-          centerY: offsetY + (baseY + h / 2) * scale
-        })
-
-        if (typeof maxTraps === 'number' && traps.length >= maxTraps) return traps
-
-        currentX += s_out - reduction + kerf.value
-
-        // Trapecio INVERTIDO (base ancha arriba) al lado
-        const inv1 = { x: currentX, y: baseY }
-        const inv2 = { x: currentX + s_out, y: baseY }
-        const inv3 = { x: currentX + offsetLeft + s_in, y: baseY + h }
-        const inv4 = { x: currentX + offsetLeft, y: baseY + h }
-
-        traps.push({
-          points: `${offsetX + inv1.x * scale},${offsetY + inv1.y * scale} ${offsetX + inv2.x * scale},${offsetY + inv2.y * scale} ${offsetX + inv3.x * scale},${offsetY + inv3.y * scale} ${offsetX + inv4.x * scale},${offsetY + inv4.y * scale}`,
-          centerX: offsetX + (currentX + s_out / 2) * scale,
-          centerY: offsetY + (baseY + h / 2) * scale
-        })
-
-        if (typeof maxTraps === 'number' && traps.length >= maxTraps) return traps
-
-        currentX += s_out - reduction + kerf.value
+  function calculateOffcuts(
+    layout: TrapezoidPosition[],
+    sheetLength: number,
+    sheetWidth: number,
+    scale: number,
+    offsetX = 20,
+    offsetY = 20
+  ): OffcutPolygon | null {
+    if (layout.length === 0) {
+      if (sheetLength >= 150 && sheetWidth >= 150) {
+        const pts = [
+          { x: 0, y: 0 },
+          { x: sheetLength, y: 0 },
+          { x: sheetLength, y: sheetWidth },
+          { x: 0, y: sheetWidth }
+        ]
+        const pointsStr = pts.map(p => `${offsetX + p.x * scale},${offsetY + p.y * scale}`).join(' ')
+        return {
+          points: pointsStr,
+          originalPoints: pts,
+          area: sheetLength * sheetWidth
+        }
       }
+      return null
+    }
 
-      // Trapecio adicional si cabe
-      if (horizontal.extra) {
-        const offsetLeft = (s_out - s_in) / 2
+    let globalMaxX = 0
+    let globalMaxY = 0
 
-        const e1 = { x: currentX + offsetLeft, y: baseY }
-        const e2 = { x: currentX + offsetLeft + s_in, y: baseY }
-        const e3 = { x: currentX + s_out, y: baseY + h }
-        const e4 = { x: currentX, y: baseY + h }
-
-        traps.push({
-          points: `${offsetX + e1.x * scale},${offsetY + e1.y * scale} ${offsetX + e2.x * scale},${offsetY + e2.y * scale} ${offsetX + e3.x * scale},${offsetY + e3.y * scale} ${offsetX + e4.x * scale},${offsetY + e4.y * scale}`,
-          centerX: offsetX + (currentX + s_out / 2) * scale,
-          centerY: offsetY + (baseY + h / 2) * scale
-        })
-
-        if (typeof maxTraps === 'number' && traps.length >= maxTraps) return traps
+    // Encontrar la caja delimitadora de todas las piezas colocadas
+    for (const trap of layout) {
+      const points = trap.points.split(' ')
+      for (const pt of points) {
+        const [px, py] = pt.split(',').map(Number)
+        const unscaledX = (px - offsetX) / scale
+        const unscaledY = (py - offsetY) / scale
+        if (unscaledX > globalMaxX) globalMaxX = unscaledX
+        if (unscaledY > globalMaxY) globalMaxY = unscaledY
       }
     }
 
-    const vertical = computeVerticalPacking(
-      materialLength,
-      materialWidth,
-      horizontal.usedWidth
-    )
-    if (vertical.traps > 0) {
-      const offsetLeft = (s_out - s_in) / 2
-      const columnWidth = h + kerf.value
-      const rowStep = s_out - reduction + kerf.value
+    const rightWidth = sheetLength - globalMaxX
+    const bottomHeight = sheetWidth - globalMaxY
 
-      for (let col = 0; col < vertical.columns; col++) {
-        const baseX = horizontal.usedWidth + col * columnWidth
-        let rowIndex = 0
+    const rightValid = rightWidth >= 150
+    const bottomValid = bottomHeight >= 150
 
-        for (let pair = 0; pair < vertical.pairs; pair++) {
-          for (let inPair = 0; inPair < 2; inPair++) {
-            const baseY = rowIndex * rowStep
-            const inverted = (col + rowIndex) % 2 === 1
-
-            const v1 = inverted
-              ? { x: baseX + 0, y: baseY + offsetLeft }
-              : { x: baseX + h, y: baseY + offsetLeft }
-            const v2 = inverted
-              ? { x: baseX + 0, y: baseY + offsetLeft + s_in }
-              : { x: baseX + h, y: baseY + offsetLeft + s_in }
-            const v3 = inverted
-              ? { x: baseX + h, y: baseY + s_out }
-              : { x: baseX + 0, y: baseY + s_out }
-            const v4 = inverted
-              ? { x: baseX + h, y: baseY + 0 }
-              : { x: baseX + 0, y: baseY + 0 }
-
-            traps.push({
-              points: `${offsetX + v1.x * scale},${offsetY + v1.y * scale} ${offsetX + v2.x * scale},${offsetY + v2.y * scale} ${offsetX + v3.x * scale},${offsetY + v3.y * scale} ${offsetX + v4.x * scale},${offsetY + v4.y * scale}`,
-              centerX: offsetX + (baseX + h / 2) * scale,
-              centerY: offsetY + (baseY + s_out / 2) * scale
-            })
-
-            if (typeof maxTraps === 'number' && traps.length >= maxTraps) return traps
-
-            rowIndex += 1
-          }
-        }
-
-        if (vertical.extra) {
-          const baseY = rowIndex * rowStep
-          const inverted = (col + rowIndex) % 2 === 1
-
-          const v1 = inverted
-            ? { x: baseX + 0, y: baseY + offsetLeft }
-            : { x: baseX + h, y: baseY + offsetLeft }
-          const v2 = inverted
-            ? { x: baseX + 0, y: baseY + offsetLeft + s_in }
-            : { x: baseX + h, y: baseY + offsetLeft + s_in }
-          const v3 = inverted
-            ? { x: baseX + h, y: baseY + s_out }
-            : { x: baseX + 0, y: baseY + s_out }
-          const v4 = inverted
-            ? { x: baseX + h, y: baseY + 0 }
-            : { x: baseX + 0, y: baseY + 0 }
-
-          traps.push({
-            points: `${offsetX + v1.x * scale},${offsetY + v1.y * scale} ${offsetX + v2.x * scale},${offsetY + v2.y * scale} ${offsetX + v3.x * scale},${offsetY + v3.y * scale} ${offsetX + v4.x * scale},${offsetY + v4.y * scale}`,
-            centerX: offsetX + (baseX + h / 2) * scale,
-            centerY: offsetY + (baseY + s_out / 2) * scale
-          })
-
-          if (typeof maxTraps === 'number' && traps.length >= maxTraps) return traps
-        }
-      }
+    if (!rightValid && !bottomValid) {
+      return null
     }
 
-    return traps
+    let pts: {x: number, y: number}[] = []
+    let area = 0
+
+    if (rightValid && bottomValid) {
+      // L-Shape
+      pts = [
+        { x: globalMaxX, y: 0 },
+        { x: sheetLength, y: 0 },
+        { x: sheetLength, y: sheetWidth },
+        { x: 0, y: sheetWidth },
+        { x: 0, y: globalMaxY },
+        { x: globalMaxX, y: globalMaxY }
+      ]
+      area = (rightWidth * globalMaxY) + (sheetLength * bottomHeight)
+    } else if (rightValid && !bottomValid) {
+      // Solo el rectangulo derecho
+      pts = [
+        { x: globalMaxX, y: 0 },
+        { x: sheetLength, y: 0 },
+        { x: sheetLength, y: sheetWidth },
+        { x: globalMaxX, y: sheetWidth }
+      ]
+      area = rightWidth * sheetWidth
+    } else if (!rightValid && bottomValid) {
+      // Solo el rectangulo inferior
+      pts = [
+        { x: 0, y: globalMaxY },
+        { x: sheetLength, y: globalMaxY },
+        { x: sheetLength, y: sheetWidth },
+        { x: 0, y: sheetWidth }
+      ]
+      area = sheetLength * bottomHeight
+    }
+    
+    const pointsStr = pts.map(p => `${offsetX + p.x * scale},${offsetY + p.y * scale}`).join(' ')
+
+    return {
+      points: pointsStr,
+      originalPoints: pts,
+      area
+    }
   }
 
   return {
@@ -278,6 +378,7 @@ export function useNestingCalculations(
     trapezoidsPerSheet,
     calculateTrapezoidsPerSheet,
     computeCuttingScaleFor,
-    buildNestingLayout
+    buildNestingLayout,
+    calculateOffcuts
   }
 }
