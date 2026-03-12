@@ -25,6 +25,10 @@ import { useNestingCalculations } from './composables/useNestingCalculations'
 import { useCuttingBreakdown, type LayerCombination } from './composables/useCuttingBreakdown'
 import { useInputValidation } from './composables/useInputValidation'
 
+// Refs para flags de recomendaciones
+const syncingRecommendation = ref(false)
+const suppressRecommendation = ref(false)
+
 // ============================================
 // THEME Y ESTADO GENERAL
 // ============================================
@@ -36,12 +40,12 @@ const activeTab = ref(0)
 // ============================================
 // Estos refs se definen antes que los computed que los usan
 // ORDEN IMPORTA: evita "ReferenceError: X is not defined"
-const ID = ref<number>(800)
+const ID = ref<number>(900)
 const OD = ref<number>(1000)
 const ringCount = ref<number>(6)
-const TH = ref<number>(12.9)
+const TH = ref<number>(12.8)
 const density = ref<number>(1.2)
-const layers = ref<number>(3)
+const layers = ref<number>(4)
 const defaultLayerColors = [
   { fill: '#8ac29a', stroke: '#8aa89a' },
   { fill: '#b5f8e4', stroke: '#c1bcd4' }
@@ -62,11 +66,10 @@ const orderNumberErrorMsg = computed(() =>
   orderNumberError.value ? 'El numero de orden debe ser numerico' : ''
 )
 
+
 // ============================================
-// VALIDACIÓN DE INPUTS
+// VALIDACIÓN DE INPUTS Y OPTIMIZACIÓN AUTOMÁTICA
 // ============================================
-// Utiliza composable useInputValidation para mantener lógica reutilizable
-// Proporciona: estados de error + funciones de validación con auto-corrección
 const {
   idError, idErrorMsg,
   odError, odErrorMsg,
@@ -81,31 +84,32 @@ const {
   validateLayers: validate_Layers
 } = useInputValidation()
 
-// Wrappers para usar con watchers de Vue
-// Estos llaman al composable pasando las Refs como argumentos
-function validateID() {
-  validate_ID(ID, OD)
+function validateID() { validate_ID(ID, OD) }
+function validateOD() { validate_OD(ID, OD) }
+function validateRadialGap() {}
+function validateTH() { validate_TH(TH) }
+function validateRingCount() { validate_RingCount(ringCount) }
+function validateLayers() { validate_Layers(layers) }
+
+// --- OPTIMIZACIÓN AUTOMÁTICA DE CAPAS Y MATERIAL ---
+// import { nextTick } from 'vue' (ya importado más abajo)
+let autoOptimizing = false
+async function autoOptimizeLayersAndMaterial() {
+  if (projectLocked.value || !dims.value) return
+  autoOptimizing = true
+  await nextTick()
+  // Siempre mantener 4 capas y optimizar solo materiales
+  layers.value = 4
+  const best = findBestLayerCombination(TH.value, 4)
+  if (best) {
+    layerThicknesses.value = best.layers.map(m => m.thickness)
+  }
+  autoOptimizing = false
 }
 
-function validateOD() {
-  validate_OD(ID, OD)
-}
-
-function validateRadialGap() {
-  // Ya se llama dentro de validateID y validateOD
-}
-
-function validateTH() {
-  validate_TH(TH)
-}
-
-function validateRingCount() {
-  validate_RingCount(ringCount)
-}
-
-function validateLayers() {
-  validate_Layers(layers)
-}
+watch([ID, OD, TH], async () => {
+  await autoOptimizeLayersAndMaterial()
+})
 
 function layerBoxFill(idx: number): string {
   const color = layerColors.value[idx]?.fill ?? defaultLayerColors[idx % 2].fill
@@ -548,10 +552,8 @@ function findBestLayerCombination(targetTH: number, layerCount: number): LayerCo
   // Filtrar solo materiales en stock
   const inStockMaterials = materials.value.filter(m => m.inStock !== false)
   
-  const uniqueMats = uniqueMaterialsByThickness(inStockMaterials)
-  const candidateCount = 6
-  const targetPerLayer = targetTH / numLayers
-  const candidateMats = pickClosestMaterials(uniqueMats, targetPerLayer, candidateCount)
+  // Usar todos los materiales únicos en stock para combinaciones
+  const candidateMats = uniqueMaterialsByThickness(inStockMaterials)
 
   function buildLayers(pairThicknesses: Material[], center?: Material): Material[] {
     const left = pairThicknesses.map(p => p)
@@ -595,118 +597,55 @@ function findBestLayerCombination(targetTH: number, layerCount: number): LayerCo
 }
 
 // ---- NUEVO: Optimizador Global de Rendimiento (Eficiencia) ----
-function findOptimalYieldCombination(targetTH: number, allowedVariance = 0.2): LayerCombination | null {
+function findOptimalYieldCombination(targetTH: number, allowedVariance = 1): LayerCombination | null {
   const inStockMaterials = materials.value.filter(m => m.inStock !== false)
   if (inStockMaterials.length === 0 || !dims.value) return null
 
-  // List of candidate combinations
-  const candidates: LayerCombination[] = []
-
-  // Test from 3 up to 8 layers
-  for (let numLayers = 3; numLayers <= 8; numLayers++) {
-    const pairCount = Math.floor(numLayers / 2)
-    const hasCenter = numLayers % 2 === 1
-    const targetPerLayer = targetTH / numLayers
-    
-    // Pick materials close to the theoretical per-layer thickness
-    const uniqueMats = uniqueMaterialsByThickness(inStockMaterials)
-    const candidateMats = pickClosestMaterials(uniqueMats, targetPerLayer, 8) // Consider up to 8 nearest thicknesses
-
-    const buildLayers = (pairThicknesses: Material[], center?: Material): Material[] => {
-      const left = pairThicknesses.map(p => p)
-      const right = [...pairThicknesses].reverse().map(p => p)
-      return hasCenter ? [...left, center!, ...right] : [...left, ...right]
-    }
-
-    const testCombination = (layersList: Material[]) => {
-      const total = layersList.reduce((sum, m) => sum + m.thickness, 0)
-      if (Math.abs(total - targetTH) <= allowedVariance) {
-        candidates.push({
-          layers: layersList,
-          totalThickness: total,
-          layerCount: numLayers
-        })
-      }
-    }
-
-    const recursePairs = (idx: number, current: Material[]) => {
-      if (idx === pairCount) {
-        if (hasCenter) {
-          for (const center of candidateMats) {
-            testCombination(buildLayers(current, center))
-          }
-        } else {
-          testCombination(buildLayers(current))
-        }
-        return
-      }
-      for (const mat of candidateMats) {
-        current.push(mat)
-        recursePairs(idx + 1, current)
-        current.pop()
-      }
-    }
-
-    recursePairs(0, [])
-  }
-
-  if (candidates.length === 0) return findBestLayerCombination(targetTH, layers.value)
-
-  // 2. Headless Simulation
   let bestCandidate: LayerCombination | null = null
   let maxScore = -Number.MAX_VALUE
   let bestYieldRaw = 0
 
-  for (const combo of candidates) {
-    // Determine the optimal ring count N globally across all options
+  // Para cada cantidad de capas, buscar la mejor combinación y comparar eficiencia
+  for (let numLayers = 3; numLayers <= 8; numLayers++) {
+    const combo = findBestLayerCombination(targetTH, numLayers)
+    if (!combo) continue
     const ringN = pickNByOD(+OD.value)
-    
-    const { yieldPct, adhesiveWeightKg, ringWeightKg, materialWeightKg } = simulateGlobalYield(
+    const { yieldPct } = simulateGlobalYield(
       dims.value,
       combo.layers,
       ringN,
       ringCount.value,
-      density.value
+      1.2
     )
-
-    // Penalización matemática real por ensamble explícito en simulateGlobalYield:
-    // El rendimiento (yieldPct) ya divide el peso útil entre el material bruto + adhesivo.
-    const score = yieldPct
-
-    if (score > maxScore) {
-      maxScore = score
+    if (yieldPct > maxScore) {
+      maxScore = yieldPct
       bestCandidate = combo
       bestYieldRaw = yieldPct
-    } else if (Math.abs(score - maxScore) < 0.1) {
-      // Tie breaker: less layers is better to reduce assembly overhead
-      if (bestCandidate && combo.layerCount < bestCandidate.layerCount) {
-        maxScore = score
-        bestCandidate = combo
-        bestYieldRaw = yieldPct
-      }
+    } else if (Math.abs(yieldPct - maxScore) < 0.1 && bestCandidate && combo.layerCount < bestCandidate.layerCount) {
+      // Si hay empate, menos capas es mejor
+      bestCandidate = combo
+      bestYieldRaw = yieldPct
     }
   }
-
-  // Add the winning raw yield pct to the candidate object to display it in the alert if needed.
   if (bestCandidate) {
     (bestCandidate as any).rawYield = bestYieldRaw
   }
-
-  return bestCandidate || findBestLayerCombination(targetTH, layers.value)
+  return bestCandidate
 }
 
-function autoOptimizeGlobalYield() {
+// Optimiza cantidad de capas y materiales buscando la mejor eficiencia y tolerancia
+import { nextTick } from 'vue'
+async function autoOptimizeGlobalYield() {
   if (projectLocked.value || !dims.value) return
-  
-  const best = findOptimalYieldCombination(TH.value, 0.2) // 0.2mm variance
+  const best = findOptimalYieldCombination(TH.value, 1)
   if (best) {
     layers.value = best.layerCount
+    await nextTick()
     layerThicknesses.value = best.layers.map(m => m.thickness)
-    
-    const projectedYield = (best as any).rawYield ?? globalCuttingStats.value.overallYieldPct
-    alert(`¡Optimización Exitosa!\nEficiencia proyectada: ${projectedYield.toFixed(1)}%\nSe configuraron ${best.layerCount} capas óptimas (minimizando complejidad).`)
+    // @ts-ignore
+    alert(`¡Optimización Exitosa!\nEficiencia proyectada: ${((best as any).rawYield ?? globalCuttingStats.value.overallYieldPct).toFixed(1)}%\nSe configuraron ${best.layerCount} capas óptimas.`)
   } else {
-    alert("No se encontró una combinación válida o el stock es insuficiente.")
+    alert("No se encontró una combinación válida para la eficiencia y tolerancia.")
   }
 }
 
@@ -1215,112 +1154,128 @@ watch([TH, layers], () => {
 
     <v-main>
       <v-tabs v-model="activeTab" grow>
-        <v-tab value="0">Diseño</v-tab>
+        <v-tab value="0">Layout</v-tab>
         <v-tab value="1">Corte</v-tab>
         <v-tab value="2">TIV - Disponibles</v-tab>
       </v-tabs>
 
       <v-window v-model="activeTab">
-        <!-- TAB 0: DISEÑO -->
+        <!-- TAB 0: LAYOUT (DISEÑO + CORTE) -->
         <v-window-item value="0">
           <v-container class="py-6">
-        <v-row dense>
-          <!-- ENTRADAS -->  
-            <v-col cols="12" md="12">
             <v-card elevation="3">
-              <v-card-title class="text-h6">Entradas</v-card-title>
+              <v-card-title class="text-h6">Inputs</v-card-title>
               <v-card-text>
-                <v-row class="ga-4">
-                  <v-col cols="12" sm="6" md="4" lg="2">
-                    <v-text-field
-                      v-model.number="density"
-                      type="number" step="0.01" min="0.1"
-                      label="Densidad (g/cm³)"
-                      variant="outlined" density="comfortable"
-                      :disabled="projectLocked"
-                    />
-                  </v-col>
-                  <v-col cols="12" sm="6" md="4" lg="2">
-                    <v-text-field
-                      v-model.number="ID"
-                      type="number" min="1" step="1"
-                      label="ID (mm)" variant="outlined" density="comfortable"
-                      :disabled="projectLocked"
-                      :error="idError"
-                      :error-messages="idErrorMsg"
-                      @blur="validateID"
-                    />
-                  </v-col>
-                  <v-col cols="12" sm="6" md="4" lg="2">
-                    <v-text-field
-                      v-model.number="OD"
-                      type="number" min="1" step="1"
-                      label="OD (mm)" variant="outlined" density="comfortable"
-                      :disabled="projectLocked"
-                      :error="odError"
-                      :error-messages="odErrorMsg"
-                      @blur="validateOD"
-                    />
-                  </v-col>
-                  <v-col cols="12" sm="6" md="4" lg="2">
-                    <v-text-field
-                      v-model.number="coeffPct"
-                      type="number" step="0.01"
-                      label="Coeficiente ±(%)" suffix="%"
-                      variant="outlined" density="comfortable"
-                      :disabled="projectLocked"
-                    />
-                  </v-col>
-                  <v-col cols="12" sm="6" md="4" lg="2">
-                    <v-text-field
-                      v-model.number.lazy="TH"
-                      type="number" step="0.1" min="5"
-                      label="TH (mm)" suffix="mm"
-                      variant="outlined" density="comfortable"
-                      :disabled="projectLocked"
-                      :error="thError"
-                      :error-messages="thErrorMsg"
-                      @blur="validateTH"
-                    />
-                  </v-col>
-                  <v-col cols="12" sm="6" md="4" lg="2" class="d-flex align-center gap-2">
-                    <v-text-field
-                      v-model.number="layers"
-                      type="number" min="3" step="1"
-                      label="Capas" variant="outlined" density="comfortable"
-                      :disabled="projectLocked"
-                      :error="layersError"
-                      :error-messages="layersErrorMsg"
-                      @blur="validateLayers"
-                      style="flex: 1"
-                    />
-                    <v-tooltip text="Auto-Optimizar Eficiencia" location="top">
-                      <template #activator="{ props }">
-                         <v-btn
-                            color="amber-darken-3"
-                            variant="flat"
-                            height="44"
-                            class="text-white mb-5"
-                            icon="mdi-auto-fix"
-                            :disabled="projectLocked"
+                <!-- INPUTS PRINCIPALES -->
+                <v-row dense>
+                  <v-row dense class="w-100 align-center">
+                                        <!-- El input de capas se mueve después de separación de corte -->
+                    <v-col cols="auto">
+                      <v-text-field
+                        v-model.number="ID"
+                        type="number"
+                        label="ID (mm)"
+                        variant="outlined"
+                        density="comfortable"
+                        :disabled="projectLocked"
+                        :error="idError"
+                        :error-messages="idErrorMsg"
+                        @blur="validateID"
+                      />
+                    </v-col>
+                    <v-col cols="auto">
+                      <v-text-field
+                        v-model.number="OD"
+                        type="number"
+                        label="OD (mm)"
+                        variant="outlined"
+                        density="comfortable"
+                        :disabled="projectLocked"
+                        :error="odError"
+                        :error-messages="odErrorMsg"
+                        @blur="validateOD"
+                      />
+                    </v-col>
+                    <v-col cols="auto">
+                      <v-text-field
+                        v-model.number="TH"
+                        type="number"
+                        label="TH (mm)"
+                        variant="outlined"
+                        density="comfortable"
+                        step="0.1"
+                        :disabled="projectLocked"
+                        :error="thError"
+                        :error-messages="thErrorMsg"
+                        @blur="validateTH"
+                      />
+                    </v-col>
+                    <v-col cols="auto">
+                      <v-text-field
+                        v-model.number="ringCount"
+                        type="number"
+                        min="1"
+                        step="1"
+                        label="Anillo(s)"
+                        variant="outlined"
+                        density="comfortable"
+                        :disabled="projectLocked"
+                        :error="ringCountError"
+                        :error-messages="ringCountErrorMsg"
+                        @blur="validateRingCount"
+                      />
+                    </v-col>
+                    <v-col cols="auto">
+                      <v-text-field
+                        v-model.number="kerf"
+                        type="number"
+                        label="Kerf (mm)"
+                        hint="Ancho de corte de la herramienta"
+                        persistent-hint
+                        variant="outlined"
+                        density="comfortable"
+                        step="0.1"
+                        min="0"
+                        :disabled="projectLocked"
+                      />
+                    </v-col>
+                    <v-col cols="auto">
+                      <v-text-field
+                        v-model.number="layers"
+                        type="number"
+                        min="3"
+                        max="8"
+                        step="1"
+                        label="Capas"
+                        variant="outlined"
+                        density="comfortable"
+                        :disabled="projectLocked"
+                        :error="layersError"
+                        :error-messages="layersErrorMsg"
+                        @blur="validateLayers"
+                      />
+                      
+                    </v-col>
+                    <v-col cols="auto" >
+                      <v-tooltip text="Optimizar combinación de capas">
+                        <template #activator="{ props }">
+                          <v-btn
+                            icon ="mdi-auto-fix"
+                            siize="large"
+                            class="mb-5"
+                            color="warning"
+                            variant="tonal"
                             v-bind="props"
-                            @click="autoOptimizeGlobalYield()"
-                          />
-                      </template>
-                    </v-tooltip>
-                  </v-col>
-                  <v-col cols="12" sm="6" md="4" lg="2">
-                    <v-text-field
-                      v-model.number="ringCount"
-                      type="number" min="1" step="1"
-                      label="Cantidad Anillos"
-                      variant="outlined" density="comfortable"
-                      :disabled="projectLocked"
-                      :error="ringCountError"
-                      :error-messages="ringCountErrorMsg"
-                      @blur="validateRingCount"
-                    />
-                  </v-col>
+                            align-self="top"
+                            @click="autoOptimizeGlobalYield"
+                            :disabled="projectLocked"
+                          >
+                          </v-btn>
+                        </template>
+                      </v-tooltip>
+                    </v-col>
+                  </v-row>
+                  <!-- Eliminar v-col duplicado de Cantidad Anillos -->
                 </v-row>
                 <v-divider class="my-4"></v-divider>
 
@@ -1368,10 +1323,11 @@ watch([TH, layers], () => {
                   </div>
                 </div>
                 
+                <!-- SEPARADOR: INFO TRAPECIO -->
+                <v-divider class="my-4"></v-divider>
                 <v-alert v-if="radialError" type="warning" variant="tonal" class="mt-2 mb-3">
                   <strong>⚠ Advertencia:</strong> {{ radialErrorMsg }}
                 </v-alert>
-                
                 <v-alert v-if="!calcError" type="success" variant="tonal" class="mt-2">
                   <strong>{{ N }}</strong> Lados (por OD nominal) →
                   Δ°= 360/{{ N }} = {{ (360/N).toFixed(3) }}° •
@@ -1381,8 +1337,8 @@ watch([TH, layers], () => {
                   {{ calcError }}
                 </v-alert>
 
-                    <!-- Combinación de capas recomendada -->
-                    <v-divider class="my-2"></v-divider>
+                    <!-- SEPARADOR: Capas Recomendadas -->
+                    <v-divider class="my-4"></v-divider>
                     <div v-if="layerCombination" class="mt-4">
                       <v-card-subtitle>Capas Recomendadas</v-card-subtitle>
                       <v-chip color="warning" variant="tonal" class="ma-4">
@@ -1405,17 +1361,12 @@ watch([TH, layers], () => {
                     </div>
               </v-card-text>
             </v-card>
-          </v-col>
-
-          <!-- PREVIEW + SALIDA -->
-          
-        </v-row>
-        </v-container>
+          </v-container>
         </v-window-item>
 
         <!-- TAB 1: CORTE -->
         <v-window-item value="1">
-          <v-container class="py-6">
+                    <v-container class="py-6">
             <v-card elevation="3">
               <v-card-title class="text-h6">Optimización de Corte</v-card-title>
               <v-card-text>
@@ -1426,7 +1377,7 @@ watch([TH, layers], () => {
                       <div class="d-flex w-100 justify-space-between align-center flex-wrap gap-4">
                         <div>
                           <div class="text-subtitle-2 border-b pb-1 mb-1">Impacto Global de Material</div>
-                          <div class="text-caption">Cálculos basados en densidad configurada ({{ density }} g/cm³) para <strong>{{ ringCount }} anillos</strong>.</div>
+                          <div class="text-caption">Cálculos basados en densidad fija (1.2 g/cm³) para <strong>{{ ringCount }} anillos</strong>.</div>
                         </div>
                         <div class="d-flex gap-2">
                           <v-chip color="primary" variant="flat">
@@ -1838,7 +1789,7 @@ watch([TH, layers], () => {
                     <template #activator="{ props }">
                       <v-btn size="small" color="success" icon="mdi-plus" :disabled="projectLocked" @click="openAddMaterialDialog" v-bind="props" />
                     </template>
-                  </v-tooltip>
+                    </v-tooltip>
                   <v-tooltip text="Descargar materiales como JSON">
                     <template #activator="{ props }">
                       <v-btn size="small" color="info" icon="mdi-download" @click="exportMaterials" v-bind="props" />
