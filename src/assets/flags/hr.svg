@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 40" role="img" aria-label="Croatia flag">
+  <rect width="60" height="13.33" y="0" fill="#ff0000"/>
+  <rect width="60" height="13.34" y="13.33" fill="#ffffff"/>
+  <rect width="60" height="13.33" y="26.67" fill="#171796"/>
+  <g transform="translate(24 11)">
+    <rect width="12" height="16" fill="#ffffff" stroke="#003399" stroke-width="0.6"/>
+    <rect width="6" height="4" x="0" y="0" fill="#d40000"/>
+    <rect width="6" height="4" x="6" y="0" fill="#ffffff"/>
+    <rect width="6" height="4" x="0" y="4" fill="#ffffff"/>
+    <rect width="6" height="4" x="6" y="4" fill="#d40000"/>
+    <rect width="6" height="4" x="0" y="8" fill="#d40000"/>
+    <rect width="6" height="4" x="6" y="8" fill="#ffffff"/>
+    <rect width="6" height="4" x="0" y="12" fill="#ffffff"/>
+    <rect width="6" height="4" x="6" y="12" fill="#d40000"/>
+  </g>
+</svg>
