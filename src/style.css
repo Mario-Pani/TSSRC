@@ -302,6 +302,39 @@ a {
   justify-content: flex-end;
 }
 
+.input-actions-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.edit-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.9rem;
+  margin-bottom: 0.8rem;
+  padding: 0.75rem 0.85rem;
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--line) 70%);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface) 78%, white 22%);
+}
+
+.edit-banner strong {
+  display: block;
+  margin-bottom: 0.15rem;
+  font: 700 0.82rem/1.15 var(--sans);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--accent-strong);
+}
+
+.edit-banner p {
+  margin: 0;
+  color: var(--muted);
+  font: 500 0.82rem/1.3 var(--sans);
+}
+
 .new-item-btn {
   border: 1px solid color-mix(in srgb, var(--accent) 42%, var(--line) 58%);
   background: color-mix(in srgb, var(--surface) 75%, white 25%);
@@ -491,9 +524,110 @@ a {
 .calc-grid {
   margin-top: 0.55rem;
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 0.45rem;
   font: 500 0.82rem/1.25 var(--sans);
+}
+
+.calc-subtitle {
+  margin: 0.45rem 0 0;
+  padding-top: 0.35rem;
+  border-top: 1px solid color-mix(in srgb, var(--line) 78%, transparent 22%);
+  font: 700 0.75rem/1.2 var(--sans);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--text) 78%, transparent 22%);
+}
+
+.layers-admin {
+  margin-top: 0.5rem;
+}
+
+.layers-hint {
+  margin: 0 0 0.4rem;
+  font: 500 0.78rem/1.3 var(--sans);
+  color: color-mix(in srgb, var(--text) 72%, transparent 28%);
+}
+
+.layers-admin-controls {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.45rem;
+  align-items: end;
+}
+
+.layers-admin-active {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.layers-table-wrap {
+  margin-top: 0.55rem;
+}
+
+.layers-table {
+  min-width: 980px;
+}
+
+.layer-status-active {
+  color: #1f7a42;
+  font-weight: 700;
+}
+
+.layer-status-inactive {
+  color: #9f1f1f;
+  font-weight: 700;
+}
+
+.layers-editor {
+  margin-top: 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.6rem;
+  background: color-mix(in srgb, var(--surface) 90%, white 10%);
+}
+
+.layers-editor h5 {
+  margin: 0 0 0.5rem;
+  font: 700 0.8rem/1.2 var(--sans);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.layers-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.45rem;
+}
+
+.layers-editor-actions {
+  margin-top: 0.5rem;
+}
+
+.layer-stack {
+  margin-top: 0.55rem;
+  border: 1px solid color-mix(in srgb, var(--line) 84%, transparent 16%);
+  border-radius: 0;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--surface) 94%, white 6%);
+}
+
+.layer-stack-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem 0.85rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 84%, transparent 16%);
+  font: 500 0.88rem/1.2 var(--sans);
+}
+
+.layer-stack-item:last-child {
+  border-bottom: 0;
+}
+
+.layer-stack-item strong {
+  font-weight: 700;
 }
 
 @keyframes reveal {
@@ -531,6 +665,16 @@ a {
   .input-grid,
   .calc-controls,
   .calc-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .edit-banner {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .layers-admin-controls,
+  .layers-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
@@ -574,7 +718,17 @@ a {
     grid-template-columns: 1fr;
   }
 
+  .layers-admin-controls,
+  .layers-grid {
+    grid-template-columns: 1fr;
+  }
+
   .input-actions {
+    justify-content: stretch;
+  }
+
+  .input-actions-group {
+    width: 100%;
     justify-content: stretch;
   }
 
